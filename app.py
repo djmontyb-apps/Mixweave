@@ -19,7 +19,7 @@ from optimizer import (
 )
 
 APP_NAME = "Mixweave"
-APP_VERSION = "0.4"
+APP_VERSION = "0.5"
 
 st.set_page_config(page_title=f"{APP_NAME} {APP_VERSION}", page_icon="🎚️", layout="wide")
 
@@ -82,16 +82,25 @@ def normalize_columns(df):
         "pop": "Popularity",
         "popularity": "Popularity",
     }
+    attrs = dict(getattr(df, "attrs", {}))
     df = df.copy()
     df.columns = [aliases.get(_clean_text(c).lower(), _clean_text(c)) for c in df.columns]
+    df.attrs.update(attrs)
     return df
 
 
 def load_crate_hackers_pdf(file):
     """Read a modern Crate Hackers playlist PDF directly from its table layout."""
     rows = []
+    playlist_title = ""
     file.seek(0)
     with pdfplumber.open(file) as pdf:
+        if pdf.pages:
+            first_text = pdf.pages[0].extract_text() or ""
+            lines = [_clean_text(x) for x in first_text.splitlines() if _clean_text(x)]
+            if lines:
+                # Crate Hackers prints the playlist title as the first line, before "Hacked by:".
+                playlist_title = lines[0]
         for page in pdf.pages:
             for table in page.extract_tables() or []:
                 if not table or len(table) < 2:
@@ -123,6 +132,7 @@ def load_crate_hackers_pdf(file):
     # Remove page-boundary duplicates if a PDF renderer repeats a row.
     subset = ["#", "Title", "Artist"]
     df = df.drop_duplicates(subset=subset, keep="first").reset_index(drop=True)
+    df.attrs["playlist_title"] = playlist_title
     return df
 
 
@@ -150,7 +160,13 @@ def _pdf_safe(value):
     return text.encode("latin-1", "replace").decode("latin-1")
 
 
-def build_mixweave_pdf(out, health, health_note, avg_score, weak, bad_bpm, max_bpm_diff, programming, flow):
+def _safe_filename(value):
+    text = _clean_text(value) or "Playlist"
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("._-")
+    return text[:120] or "Playlist"
+
+
+def build_mixweave_pdf(out, playlist_title, health, health_note, avg_score, weak, bad_bpm, max_bpm_diff, programming, flow):
     """Create the clean DJ-facing Mixweave running-order PDF."""
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -160,7 +176,7 @@ def build_mixweave_pdf(out, health, health_note, avg_score, weak, bad_bpm, max_b
         leftMargin=24,
         topMargin=24,
         bottomMargin=24,
-        title=f"Mixweave {APP_VERSION} Optimized Running Order",
+        title=f"{playlist_title} - Mixweave {APP_VERSION} Optimized Running Order",
         author="Mixweave",
     )
     styles = getSampleStyleSheet()
@@ -177,7 +193,8 @@ def build_mixweave_pdf(out, health, health_note, avg_score, weak, bad_bpm, max_b
     head = ParagraphStyle("MWHead", parent=cell_center, fontName="Helvetica-Bold", textColor=colors.white)
 
     story = [
-        Paragraph(f"Mixweave {APP_VERSION} - Optimized Running Order", title_style),
+        Paragraph(_pdf_safe(playlist_title), title_style),
+        Paragraph(f"Mixweave {APP_VERSION} - Optimized Running Order", sub_style),
         Paragraph(
             _pdf_safe(
                 f"Set Health: {health} | Avg transition {avg_score:.1f} | Weak links {weak} | "
@@ -321,6 +338,9 @@ if not uploaded:
 
 try:
     df, import_type = load_playlist(uploaded)
+    playlist_title = _clean_text(df.attrs.get("playlist_title", ""))
+    if not playlist_title:
+        playlist_title = re.sub(r"\.(pdf|csv|xlsx|xls)$", "", uploaded.name, flags=re.I)
 except Exception as e:
     st.error(f"Could not read that file: {e}")
     if uploaded.name.lower().endswith(".pdf"):
@@ -462,6 +482,8 @@ if st.button("⚡ Build my Mixweave", type="primary", width="stretch"):
         st.dataframe(pd.DataFrame(detail_rows), width="stretch", hide_index=True)
 
     st.subheader("Export")
+    export_base = f"{_safe_filename(playlist_title)}_Mixweave_v{APP_VERSION}"
+    st.caption(f"Playlist: {playlist_title} • Mixweave v{APP_VERSION}")
     d1, d2 = st.columns(2)
 
     xbuf = io.BytesIO()
@@ -470,19 +492,19 @@ if st.button("⚡ Build my Mixweave", type="primary", width="stretch"):
     d1.download_button(
         "Download Excel",
         xbuf.getvalue(),
-        file_name="Mixweave_optimized_playlist.xlsx",
+        file_name=f"{export_base}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",
     )
 
     pdf_bytes = build_mixweave_pdf(
-        out, health, health_note, avg_score, weak, bad_bpm,
+        out, playlist_title, health, health_note, avg_score, weak, bad_bpm,
         max_bpm_diff, arc["score"], flow["score"],
     )
     d2.download_button(
         "Download PDF",
         pdf_bytes,
-        file_name="Mixweave_optimized_running_order.pdf",
+        file_name=f"{export_base}.pdf",
         mime="application/pdf",
         width="stretch",
     )
@@ -492,7 +514,7 @@ if st.button("⚡ Build my Mixweave", type="primary", width="stretch"):
         st.download_button(
             "Download CSV",
             csv_bytes,
-            file_name="Mixweave_optimized_playlist.csv",
+            file_name=f"{export_base}.csv",
             mime="text/csv",
             width="stretch",
         )

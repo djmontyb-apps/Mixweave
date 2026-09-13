@@ -23,7 +23,7 @@ class Settings:
     # forcing a mathematically smooth curve. BPM safety always has veto power.
     energy_arc: str = "Party Zones"  # Off | Smooth | Build Zones | Party Zones
     energy_arc_influence: float = 0.25
-    # v0.4 Programming Flow: smooth obvious Energy whiplash *inside* each zone
+    # v0.5 Zone Shape: smooth Energy flow *inside* each zone with zone-specific direction
     # without overriding BPM safety or weak-link protection.
     zone_flow_influence: float = 0.20
     zone_flow_max_jump: float = 28.0
@@ -415,7 +415,7 @@ def energy_flow_stats(order, s):
     Finish remains deliberately flexible so a DJ can land softly or end strong.
     """
     if len(order) < 2 or getattr(s, "energy_arc", "Off") == "Off":
-        return {"score": 100.0, "whiplash": 0, "reverse": 0, "max_jump": 0.0, "opener_hot": 0}
+        return {"score": 100.0, "whiplash": 0, "reverse": 0, "shape": 0, "max_jump": 0.0, "opener_hot": 0}
 
     vals, _ = _energy_values(order)
     zones = energy_zone_labels(order, s)
@@ -424,6 +424,7 @@ def energy_flow_stats(order, s):
     penalties = []
     whiplash = 0
     reverse = 0
+    shape = 0
     max_jump = 0.0
     default_jump = float(getattr(s, "zone_flow_max_jump", 28.0))
 
@@ -456,6 +457,18 @@ def energy_flow_stats(order, s):
             elif z1 == "Peak" and delta < -18:
                 reverse += 1
                 penalties[-1] = max(penalties[-1], min(1.0, (-delta - 18) / 28.0))
+
+            # v0.5 Zone Shape: Warm-up should gently rise, Build should clearly
+            # bias upward, and Peak should avoid deep collapses. Groove breathes.
+            if z1 == "Warm-up" and delta < -12:
+                shape += 1
+                penalties[-1] = max(penalties[-1], min(1.0, (-delta - 12) / 30.0))
+            elif z1 == "Build" and delta < -8:
+                shape += 1
+                penalties[-1] = max(penalties[-1], min(1.0, (-delta - 8) / 26.0))
+            elif z1 == "Peak" and delta < -12:
+                shape += 1
+                penalties[-1] = max(penalties[-1], min(1.0, (-delta - 12) / 28.0))
         else:
             pen = 0.0
             if z2 in ("Groove", "Build", "Peak") and delta < -16:
@@ -470,6 +483,7 @@ def energy_flow_stats(order, s):
         "score": round(score, 2),
         "whiplash": int(whiplash),
         "reverse": int(reverse),
+        "shape": int(shape),
         "max_jump": round(max_jump, 2),
         "opener_hot": int(opener_hot),
     }
@@ -1175,6 +1189,7 @@ def _route_program_stats(order, s):
         "flow": energy_flow_stats(order, s)["score"],
         "energy_whiplash": energy_flow_stats(order, s)["whiplash"],
         "energy_reverse": energy_flow_stats(order, s)["reverse"],
+        "energy_shape": energy_flow_stats(order, s).get("shape", 0),
         "max_energy_jump": energy_flow_stats(order, s)["max_jump"],
         "opener_hot": energy_flow_stats(order, s)["opener_hot"],
     }
@@ -1248,7 +1263,7 @@ def program_energy_arc(order, s):
 
 
 def polish_zone_energy_flow(order, s):
-    """v0.4 Programming Flow pass.
+    """v0.5 Zone Shape pass.
 
     Smooth obvious Energy whiplash inside the existing zone plan while preserving
     Mixweave's hierarchy: no new BPM guardrail violation, no additional weak
@@ -1287,6 +1302,7 @@ def polish_zone_energy_flow(order, s):
     def rank(st):
         return (
             -st["opener_hot"],
+            -st["energy_shape"],
             -st["energy_whiplash"],
             -st["energy_reverse"],
             st["flow"],

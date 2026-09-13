@@ -1,4 +1,4 @@
-# Mixweave 0.4
+# Mixweave 0.5
 
 **Mixweave** is a DJ playlist sequencing tool. It takes an already-built crate or playlist and turns it into a more performance-ready running order using the metadata that matters most to a working DJ:
 
@@ -115,17 +115,16 @@ The app also reports **Set Health**, weak links, hard BPM jumps, worst BPM diffe
 - `requirements.txt` — Python dependencies
 - `README.md` — project overview
 
-## Mixweave 0.4 changes
+## Mixweave 0.5 changes
 
-- Added **Programming Flow** as a conservative post-programming pass
-- Detects obvious adjacent Energy whiplash inside Warm-up, Groove, Build, and Peak
-- Protects the opener from being moved to an obviously over-hot Warm-up position
-- Preserves the v0.3 BPM hierarchy: no new hard BPM jumps are allowed in the flow pass
-- Will not add weak links, artist collisions, or regress Build/Peak Energy guardrails
-- Added an **Energy flow** score and whiplash count to the results summary
-- Added Energy flow to the DJ-facing PDF Set Health line
+- Added **Zone Shape** refinement: Warm-up gently rises, Build has a stronger upward bias, Peak resists deep collapses, and Groove remains flexible
+- Zone Shape is conservative: it may not add hard BPM jumps, weak links, or artist collisions
+- Preserves the v0.4 Energy Flow measurement and BPM-safe route hierarchy
+- Preserves the original Crate Hackers playlist title during PDF import
+- PDF header now shows the original playlist title plus **Mixweave 0.5 - Optimized Running Order**
+- Excel, PDF, and CSV filenames now include the playlist title and Mixweave version
 - Retains Crate Hackers PDF import plus Excel/PDF/CSV export
 
-### v0.4 benchmark goal
+### v0.5 benchmark goal
 
-The Kurt & Anika cocktail crate remains the primary regression test. v0.4 is intended to keep the v0.3 achievement of **zero hard BPM jumps** while reducing avoidable Energy sawtooths inside the programmed sections. The optimizer still prefers a tempo-safe route over a cosmetically smoother Energy curve when the two conflict.
+The Kurt & Anika cocktail crate remains the primary regression test. v0.5 should keep **zero hard BPM jumps**, avoid increasing weak links, and improve the musical direction inside Warm-up/Build/Peak. After that, the 50-track Carlos Wedding Cocktails crate becomes the first broader stress test.
