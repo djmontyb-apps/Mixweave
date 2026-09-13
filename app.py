@@ -3,6 +3,11 @@ import re
 import pandas as pd
 import pdfplumber
 import streamlit as st
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import landscape, letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from optimizer import (
     Settings,
     optimize,
@@ -13,7 +18,7 @@ from optimizer import (
 )
 
 APP_NAME = "Mixweave"
-APP_VERSION = "0.2"
+APP_VERSION = "0.3"
 
 st.set_page_config(page_title=f"{APP_NAME} {APP_VERSION}", page_icon="🎚️", layout="wide")
 
@@ -129,6 +134,99 @@ def load_playlist(file):
         return normalize_columns(df), "CSV"
     df = pd.read_excel(file)
     return normalize_columns(df), "Excel"
+
+
+
+def _pdf_safe(value):
+    """Keep ReportLab's built-in fonts happy with common DJ metadata."""
+    text = _clean_text(value)
+    swaps = {
+        "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+        "\u2013": "-", "\u2014": "-", "\u2026": "...", "\u00a0": " ",
+    }
+    for old, new in swaps.items():
+        text = text.replace(old, new)
+    return text.encode("latin-1", "replace").decode("latin-1")
+
+
+def build_mixweave_pdf(out, health, health_note, avg_score, weak, bad_bpm, max_bpm_diff, programming):
+    """Create the clean DJ-facing Mixweave running-order PDF."""
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=landscape(letter),
+        rightMargin=24,
+        leftMargin=24,
+        topMargin=24,
+        bottomMargin=24,
+        title=f"Mixweave {APP_VERSION} Optimized Running Order",
+        author="Mixweave",
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "MWTitle", parent=styles["Title"], fontName="Helvetica-Bold",
+        fontSize=20, leading=23, alignment=TA_CENTER, spaceAfter=6,
+    )
+    sub_style = ParagraphStyle(
+        "MWSub", parent=styles["BodyText"], fontName="Helvetica",
+        fontSize=9.5, leading=12, alignment=TA_CENTER, spaceAfter=10,
+    )
+    cell = ParagraphStyle("MWCell", parent=styles["BodyText"], fontSize=7.2, leading=8.4)
+    cell_center = ParagraphStyle("MWCellCenter", parent=cell, alignment=TA_CENTER)
+    head = ParagraphStyle("MWHead", parent=cell_center, fontName="Helvetica-Bold", textColor=colors.white)
+
+    story = [
+        Paragraph(f"Mixweave {APP_VERSION} - Optimized Running Order", title_style),
+        Paragraph(
+            _pdf_safe(
+                f"Set Health: {health} | Avg transition {avg_score:.1f} | Weak links {weak} | "
+                f"Hard BPM jumps {bad_bpm} | Worst BPM delta {max_bpm_diff:.1f} | Programming {programming:.1f}"
+            ),
+            sub_style,
+        ),
+        Paragraph(_pdf_safe(health_note), sub_style),
+        Spacer(1, 4),
+    ]
+
+    cols = ["Mixweave #", "Title", "Artist", "BPM", "Camelot Key", "Energy", "Danceability", "Mood", "Program Zone"]
+    headers = ["#", "Title", "Artist", "BPM", "Key", "Energy", "Dance", "Mood", "Zone"]
+    data = [[Paragraph(h, head) for h in headers]]
+    for _, row in out.iterrows():
+        vals = []
+        for col in cols:
+            value = row.get(col, "")
+            if pd.isna(value):
+                value = ""
+            if col in ("BPM", "Energy", "Danceability", "Mood") and value != "":
+                try:
+                    f = float(value)
+                    value = f"{f:.0f}" if abs(f - round(f)) < 0.01 else f"{f:.1f}"
+                except Exception:
+                    pass
+            style = cell_center if col not in ("Title", "Artist") else cell
+            vals.append(Paragraph(_pdf_safe(value), style))
+        data.append(vals)
+
+    table = Table(
+        data,
+        repeatRows=1,
+        colWidths=[34, 170, 128, 42, 46, 48, 48, 46, 62],
+        hAlign="CENTER",
+    )
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#20252B")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D7DADF")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F4F5F7")]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(table)
+    doc.build(story)
+    return buf.getvalue()
 
 
 def set_health(avg_score, weak, hard_bpm, max_bpm_diff, adjacent_artist, programming):
@@ -356,11 +454,38 @@ if st.button("⚡ Build my Mixweave", type="primary", width="stretch"):
             })
         st.dataframe(pd.DataFrame(detail_rows), width="stretch", hide_index=True)
 
+    st.subheader("Export")
     d1, d2 = st.columns(2)
-    csv_bytes = out.to_csv(index=False).encode("utf-8")
-    d1.download_button("Download CSV", csv_bytes, file_name="Mixweave_optimized_playlist.csv", mime="text/csv", width="stretch")
 
     xbuf = io.BytesIO()
     with pd.ExcelWriter(xbuf, engine="openpyxl") as writer:
         out.to_excel(writer, index=False, sheet_name="Mixweave Order")
-    d2.download_button("Download Excel", xbuf.getvalue(), file_name="Mixweave_optimized_playlist.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
+    d1.download_button(
+        "Download Excel",
+        xbuf.getvalue(),
+        file_name="Mixweave_optimized_playlist.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        width="stretch",
+    )
+
+    pdf_bytes = build_mixweave_pdf(
+        out, health, health_note, avg_score, weak, bad_bpm,
+        max_bpm_diff, arc["score"],
+    )
+    d2.download_button(
+        "Download PDF",
+        pdf_bytes,
+        file_name="Mixweave_optimized_running_order.pdf",
+        mime="application/pdf",
+        width="stretch",
+    )
+
+    with st.expander("More export options", expanded=False):
+        csv_bytes = out.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "Download CSV",
+            csv_bytes,
+            file_name="Mixweave_optimized_playlist.csv",
+            mime="text/csv",
+            width="stretch",
+        )

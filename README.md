@@ -1,4 +1,4 @@
-# Mixweave 0.2
+# Mixweave 0.3
 
 **Mixweave** is a DJ playlist sequencing tool. It takes an already-built crate or playlist and turns it into a more performance-ready running order using the metadata that matters most to a working DJ:
 
@@ -114,7 +114,7 @@ The app also reports **Set Health**, weak links, hard BPM jumps, worst BPM diffe
 - `requirements.txt` — Python dependencies
 - `README.md` — project overview
 
-## Mixweave 0.2 changes
+## Mixweave 0.3 changes
 
 - Renamed the app and output from SetFlow to **Mixweave**
 - Added native **Crate Hackers PDF** import

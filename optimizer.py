@@ -395,9 +395,9 @@ def energy_guardrail_stats(order, s):
     for i, actual in enumerate(vals):
         zone = energy_zone_for_position(i, len(vals), getattr(s, "energy_arc", "Party Zones"))[0]
         pct = _energy_percentile(actual, sorted_vals)
-        if zone == "Peak" and pct < 0.52:
+        if zone == "Peak" and pct < 0.62:
             peak_low += 1
-        elif zone == "Build" and pct < 0.25:
+        elif zone == "Build" and pct < 0.30:
             build_low += 1
     return {"peak_low": peak_low, "build_low": build_low}
 
@@ -782,6 +782,102 @@ def canonical_bpm(track):
         return b / 2.0
     return b
 
+
+
+def bpm_safe_path_order(tracks, s, max_calls=120000):
+    """v0.3 BPM-safe path planner.
+
+    Build a graph whose edges are transitions at or inside the BPM guardrail,
+    including legitimate half/double-time matches. A bounded backtracking search
+    then looks for a Hamiltonian path through that graph. When one exists, this
+    gives Mixweave a candidate with *zero* hard BPM jumps before harmony and
+    programming polish begin.
+
+    The search uses a low-degree-first heuristic (protect tempo orphans) and is
+    bounded so large/hostile crates fall back to the existing planners quickly.
+    """
+    n = len(tracks)
+    if n <= 2:
+        return list(tracks)
+
+    graph = [[] for _ in range(n)]
+    edge_score = {}
+    for i in range(n):
+        for j in range(i + 1, n):
+            sc, d = transition_score(tracks[i], tracks[j], s)
+            diff = d.get("bpm_diff")
+            if diff is None or diff <= s.bpm_guardrail:
+                graph[i].append(j)
+                graph[j].append(i)
+                edge_score[(i, j)] = edge_score[(j, i)] = sc
+
+    # A disconnected safe graph cannot contain a fully safe route.
+    seen = set()
+    stack = [0]
+    while stack:
+        u = stack.pop()
+        if u in seen:
+            continue
+        seen.add(u)
+        stack.extend(v for v in graph[u] if v not in seen)
+    if len(seen) != n:
+        return None
+
+    calls = 0
+    fixed_start = 0 if s.lock_first else None
+    fixed_last = n - 1 if s.lock_last else None
+    starts = [fixed_start] if fixed_start is not None else sorted(range(n), key=lambda i: len(graph[i]))
+
+    def dfs(path, used_mask):
+        nonlocal calls
+        calls += 1
+        if calls > max_calls:
+            return None
+        if len(path) == n:
+            if fixed_last is None or path[-1] == fixed_last:
+                return list(path)
+            return None
+
+        u = path[-1]
+        candidates = [v for v in graph[u] if not ((used_mask >> v) & 1)]
+        # Locked last track may only be consumed at the final step.
+        if fixed_last is not None and len(path) < n - 1:
+            candidates = [v for v in candidates if v != fixed_last]
+
+        def onward(v):
+            available = sum(1 for w in graph[v] if not ((used_mask >> w) & 1))
+            return (available, -edge_score.get((u, v), 0.0))
+        candidates.sort(key=onward)
+
+        for v in candidates:
+            new_mask = used_mask | (1 << v)
+            # Cheap orphan pruning: after choosing v, at most one unused track
+            # may have no unused neighbor (that track could be the final endpoint).
+            stranded = 0
+            for x in range(n):
+                if (new_mask >> x) & 1:
+                    continue
+                if fixed_last is not None and x == fixed_last and len(path) == n - 1:
+                    continue
+                if not any(not ((new_mask >> w) & 1) for w in graph[x]):
+                    stranded += 1
+                    if stranded > 1:
+                        break
+            if stranded > 1:
+                continue
+            result = dfs(path + [v], new_mask)
+            if result is not None:
+                return result
+        return None
+
+    for start in starts:
+        calls = 0
+        result = dfs([start], 1 << start)
+        if result is not None:
+            return [tracks[i] for i in result]
+        if fixed_start is not None:
+            break
+    return None
 
 def bpm_spine_order(tracks, s):
     """v0.5 bridge planner: create a tempo-safe backbone, then polish it.
@@ -1325,6 +1421,133 @@ def polish_weak_transitions(order, s):
 
     return best
 
+
+def rescue_transition_neighborhoods(order, s):
+    """v0.3 neighborhood rescue for clusters of weak transitions.
+
+    A weak transition is often not an isolated problem: two or three tracks can
+    form a bad neighborhood because a bridge was consumed elsewhere. This pass
+    removes short blocks around the weakest edges and reinserts them (in either
+    direction) anywhere in the route. Whole-set safety remains lexicographic:
+    severe BPM cliffs, hard guardrail violations, and weak links must improve
+    before average score or programming polish matter.
+    """
+    if len(order) < 5:
+        return list(order)
+    best = list(order)
+    best_obj = objective(best, s)
+    passes = 1 if s.depth == "Quick" else (2 if s.depth == "Standard" else 4)
+
+    for _ in range(passes):
+        n = len(best)
+        edge_rank = []
+        for i in range(n - 1):
+            sc, d = transition_score(best[i], best[i + 1], s)
+            diff = d.get("bpm_diff")
+            hard = 1 if diff is not None and diff > s.bpm_guardrail else 0
+            severe = 1 if diff is not None and diff > s.bpm_guardrail + 4 else 0
+            weak = 1 if sc * 100 < s.min_transition_target else 0
+            edge_rank.append(((severe, hard, weak, -sc), i))
+        targets = [i for _, i in sorted(edge_rank, reverse=True)[:min(4, len(edge_rank))]]
+
+        choice = None
+        choice_obj = best_obj
+        for edge_i in targets:
+            # Try 2-, 3-, and 4-track neighborhoods surrounding the bad edge.
+            for length in (2, 3):
+                starts = {edge_i - length + 2, edge_i - 1, edge_i}
+                for start in starts:
+                    start = max(0, min(start, n - length))
+                    end = start + length
+                    if s.lock_first and start == 0:
+                        continue
+                    if s.lock_last and end == n:
+                        continue
+                    block = best[start:end]
+                    remainder = best[:start] + best[end:]
+                    orientations = [block]
+                    if length > 1:
+                        orientations.append(list(reversed(block)))
+                    for orient in orientations:
+                        lo = 1 if s.lock_first else 0
+                        hi = len(remainder) if not s.lock_last else len(remainder) - 1
+                        for pos in range(lo, hi + 1):
+                            cand = remainder[:pos] + orient + remainder[pos:]
+                            obj = objective(cand, s)
+                            if obj > choice_obj:
+                                choice_obj = obj
+                                choice = cand
+        if choice is None:
+            break
+        best, best_obj = choice, choice_obj
+    return best
+
+
+def rescue_hard_bpm_guardrail(order, s):
+    """v0.3 final BPM veto pass.
+
+    Exhaustively try relocations, swaps, and short reversals whenever a route
+    still contains a transition beyond the BPM guardrail. The pass accepts any
+    route with fewer severe/hard BPM violations first, even if a small amount of
+    harmonic/programming score is sacrificed. This reflects Mixweave's core rule:
+    a pretty Camelot match cannot rescue a bad tempo cliff.
+    """
+    if len(order) < 4:
+        return list(order)
+    best = list(order)
+    base = _route_program_stats(best, s)
+    passes = 2 if s.depth == "Quick" else (6 if s.depth == "Standard" else 10)
+    lo = 1 if s.lock_first else 0
+    hi = len(best) - 1 if s.lock_last else len(best)
+
+    def rank(st):
+        return (-st["severe"], -st["hard"], -st["weak"], st["minimum"], st["avg"], st["arc"], st["vibe"])
+
+    for _ in range(passes):
+        if base["hard"] == 0:
+            break
+        best_rank = rank(base)
+        choice = None
+        choice_stats = None
+        n = len(best)
+
+        # Relocations and swaps give the optimizer a full-route chance to use an
+        # overlooked bridge instead of leaving a tempo island at one end.
+        for i in range(lo, hi):
+            for j in range(lo, hi + 1):
+                if i == j or i + 1 == j:
+                    continue
+                cand = list(best)
+                tr = cand.pop(i)
+                dest = j if j < i else j - 1
+                cand.insert(max(lo, min(dest, len(cand))), tr)
+                st = _route_program_stats(cand, s)
+                r = rank(st)
+                if r > best_rank:
+                    best_rank, choice, choice_stats = r, cand, st
+            for j in range(i + 1, hi):
+                cand = list(best)
+                cand[i], cand[j] = cand[j], cand[i]
+                st = _route_program_stats(cand, s)
+                r = rank(st)
+                if r > best_rank:
+                    best_rank, choice, choice_stats = r, cand, st
+
+        # Short reversals are valuable when the right bridge tracks are present
+        # but facing the wrong direction around a tempo island.
+        for i in range(lo, hi - 2):
+            for j in range(i + 2, min(hi, i + 9)):
+                cand = best[:i] + list(reversed(best[i:j + 1])) + best[j + 1:]
+                st = _route_program_stats(cand, s)
+                r = rank(st)
+                if r > best_rank:
+                    best_rank, choice, choice_stats = r, cand, st
+
+        if choice is None:
+            break
+        best, base = choice, choice_stats
+    return best
+
 def _mark_escape_reasons(order, transitions, s):
     """Label key-breaking but tempo-practical links as BPM Escape when appropriate."""
     if not s.escape_mode:
@@ -1363,6 +1586,9 @@ def optimize(tracks, s: Settings):
 
     candidates = [anchor_first_order(tracks, s)]
     if s.bpm_spine:
+        safe_route = bpm_safe_path_order(tracks, s)
+        if safe_route is not None:
+            candidates.append(safe_route)
         candidates.append(bpm_spine_order(tracks, s))
     if use_insertion:
         candidates.append(insertion_order(tracks, s))
@@ -1382,19 +1608,24 @@ def optimize(tracks, s: Settings):
         s.seed = old_seed
 
     best = max(improved, key=lambda o: objective(o, s))
-    # Explicitly repair the weakest links before finalizing.
+    # v0.3: solve tempo/weak-link structure before any programming polish.
     best = rescue_weak_links(best, s)
-    # Programming Brain: reshape the safe route into broad Energy Zones
-    # while preserving BPM safety and artist separation.
+    best = rescue_transition_neighborhoods(best, s)
+    best = rescue_hard_bpm_guardrail(best, s)
+
+    # Programming Brain: reshape the safe route into broad Energy Zones.
     best = program_energy_arc(best, s)
     best = rescue_artist_spacing(best, s)
     best = enforce_energy_zone_guardrails(best, s)
-    # Only after the route is safe, programmed, and artist-clean do
-    # Danceability + Mood get to break near-ties.
+
+    # Vibe remains a tie-breaker only.
     best = polish_vibe_tiebreak(best, s)
-    # Keep the proven v1 weak-link cleanup, then re-assert the two v1.1
-    # programming guardrails so cleanup cannot quietly undo them.
+
+    # Conservative cleanup, then re-assert v0.3 safety and Peak guardrails so
+    # late polish cannot quietly reintroduce the exact failures we just solved.
     best = polish_weak_transitions(best, s)
+    best = rescue_transition_neighborhoods(best, s)
+    best = rescue_hard_bpm_guardrail(best, s)
     best = rescue_artist_spacing(best, s)
     best = enforce_energy_zone_guardrails(best, s)
 
