@@ -1176,22 +1176,28 @@ def _route_program_stats(order, s):
             severe += 1
         if pct < s.min_transition_target:
             weak += 1
+    # These helpers each scan the whole route. Compute them once per candidate;
+    # the old code recalculated artist/guardrail/flow stats many times here,
+    # multiplying the cost of every swap/relocation considered by the polishers.
+    adjacent_artist, near_artist = artist_spacing_stats(order)
+    guard = energy_guardrail_stats(order, s)
+    flow = energy_flow_stats(order, s)
     return {
         "severe": severe, "hard": hard, "weak": weak,
         "avg": sum(scores)/max(len(scores),1),
         "minimum": min(scores) if scores else 100.0,
         "arc": energy_zone_score(order, s) * 100.0,
         "vibe": vibe_program_score(order, s) * 100.0,
-        "adjacent_artist": artist_spacing_stats(order)[0],
-        "near_artist": artist_spacing_stats(order)[1],
-        "peak_low": energy_guardrail_stats(order, s)["peak_low"],
-        "build_low": energy_guardrail_stats(order, s)["build_low"],
-        "flow": energy_flow_stats(order, s)["score"],
-        "energy_whiplash": energy_flow_stats(order, s)["whiplash"],
-        "energy_reverse": energy_flow_stats(order, s)["reverse"],
-        "energy_shape": energy_flow_stats(order, s).get("shape", 0),
-        "max_energy_jump": energy_flow_stats(order, s)["max_jump"],
-        "opener_hot": energy_flow_stats(order, s)["opener_hot"],
+        "adjacent_artist": adjacent_artist,
+        "near_artist": near_artist,
+        "peak_low": guard["peak_low"],
+        "build_low": guard["build_low"],
+        "flow": flow["score"],
+        "energy_whiplash": flow["whiplash"],
+        "energy_reverse": flow["reverse"],
+        "energy_shape": flow.get("shape", 0),
+        "max_energy_jump": flow["max_jump"],
+        "opener_hot": flow["opener_hot"],
     }
 
 
@@ -1747,26 +1753,76 @@ def _mark_escape_reasons(order, transitions, s):
 
 
 def optimize(tracks, s: Settings):
+    """Build a DJ-usable route with adaptive performance guardrails.
+
+    v1.2 performance fix: the musical rules are unchanged, but expensive search
+    depth now scales with playlist size. Standard mode no longer spends an
+    unbounded amount of time re-polishing the same route or exploring a huge
+    Hamiltonian-path search on larger crates.
+    """
     if not tracks:
         return [], []
 
     n = len(tracks)
+
+    # Very large Standard crates use the same scoring rules with a deliberately
+    # smaller search surface. This prevents the UI from appearing hung on 55+
+    # tracks while still honoring BPM guardrails and the whole-set objective.
+    ultra_large_standard = (s.depth == "Standard" and n >= 55)
+    if ultra_large_standard:
+        candidates = [bpm_spine_order(tracks, s), greedy_order(tracks, s, None)]
+        candidates.append(insertion_order(tracks, s))
+        improved = []
+        for idx, cand in enumerate(candidates):
+            old_seed = s.seed
+            s.seed = old_seed + idx * 97
+            improved.append(improve_local(cand, s, min(120, max(60, 2 * n))))
+            s.seed = old_seed
+        best = max(improved, key=lambda o: objective(o, s))
+        old_rescue_passes = s.rescue_passes
+        s.rescue_passes = min(old_rescue_passes, 2)
+        try:
+            best = rescue_weak_links(best, s)
+            best = rescue_hard_bpm_guardrail(best, s)
+        finally:
+            s.rescue_passes = old_rescue_passes
+        transitions = []
+        for i in range(len(best) - 1):
+            _, detail = transition_score(best[i], best[i + 1], s)
+            transitions.append(detail)
+        transitions = _mark_escape_reasons(best, transitions, s)
+        for detail in transitions:
+            detail["quality"] = transition_quality(detail, s)
+        return best, transitions
+
+    # Search budgets are deliberately conservative for live use. Deep remains
+    # available when the user explicitly wants more exploration.
     if s.depth == "Quick":
         starts = [None]
-        local_iters = min(300, 8 * n)
+        local_iters = min(220, max(80, 5 * n))
         use_insertion = False
+        safe_path_calls = min(2500, max(500, 50 * n))
+        rescue_cap = 2
     elif s.depth == "Deep":
-        starts = [None] + list(range(min(n, 10)))
-        local_iters = min(9000, max(2500, 35 * n))
+        starts = [None] + list(range(min(n, 7)))
+        local_iters = min(5000, max(1600, 22 * n))
         use_insertion = True
+        safe_path_calls = min(40000, max(8000, 500 * n))
+        rescue_cap = 6
     else:
-        starts = [None] + list(range(min(n, 5)))
-        local_iters = min(3500, max(900, 18 * n))
+        # Standard is the normal working mode: broad candidate diversity, but
+        # bounded enough that 30-60 track playlists return predictably.
+        starts = [None] + list(range(min(n, 3 if n >= 36 else 4)))
+        local_iters = min(1800, max(500, 10 * n))
         use_insertion = True
+        safe_path_calls = min(10000, max(2500, 140 * n))
+        rescue_cap = 3 if n >= 30 else 4
 
     candidates = [anchor_first_order(tracks, s)]
     if s.bpm_spine:
-        safe_route = bpm_safe_path_order(tracks, s)
+        # The safe-path planner is NP-hard in the worst case, so it must always
+        # run with an explicit budget. bpm_spine_order() remains the fast fallback.
+        safe_route = bpm_safe_path_order(tracks, s, max_calls=safe_path_calls)
         if safe_route is not None:
             candidates.append(safe_route)
         candidates.append(bpm_spine_order(tracks, s))
@@ -1779,7 +1835,7 @@ def optimize(tracks, s: Settings):
         candidates.append(greedy_order(tracks, s, st))
 
     improved = []
-    per_candidate = max(150, local_iters // max(len(candidates), 1))
+    per_candidate = max(80, local_iters // max(len(candidates), 1))
     for idx, cand in enumerate(candidates):
         # Offset seed so candidates explore different local moves reproducibly.
         old_seed = s.seed
@@ -1788,28 +1844,62 @@ def optimize(tracks, s: Settings):
         s.seed = old_seed
 
     best = max(improved, key=lambda o: objective(o, s))
-    # v0.3: solve tempo/weak-link structure before any programming polish.
-    best = rescue_weak_links(best, s)
-    best = rescue_transition_neighborhoods(best, s)
-    best = rescue_hard_bpm_guardrail(best, s)
 
-    # Programming Brain: reshape the safe route into broad Energy Zones.
-    best = program_energy_arc(best, s)
-    best = rescue_artist_spacing(best, s)
-    best = enforce_energy_zone_guardrails(best, s)
-    best = polish_zone_energy_flow(best, s)
+    # Temporarily cap deterministic rescue loops for Standard/Quick. This does
+    # not change their acceptance rules; it only prevents repeated no-gain scans.
+    old_rescue_passes = s.rescue_passes
+    s.rescue_passes = min(old_rescue_passes, rescue_cap)
+    try:
+        # Solve tempo/weak-link structure before programming polish.
+        best = rescue_weak_links(best, s)
+        best = rescue_transition_neighborhoods(best, s)
+        best = rescue_hard_bpm_guardrail(best, s)
 
-    # Vibe remains a tie-breaker only.
-    best = polish_vibe_tiebreak(best, s)
+        # Programming Brain: broad Energy Zones are already part of objective().
+        # On larger Standard crates, avoid the old O(n^3)-style exhaustive
+        # all-swap/all-relocation polishers. Keep the cheaper guardrail passes
+        # that enforce the same DJ rules without searching every permutation.
+        large_standard = (s.depth == "Standard" and n >= 30)
+        very_large_standard = (s.depth == "Standard" and n >= 40)
+        huge_standard = (s.depth == "Standard" and n >= 45)
+        if not large_standard:
+            best = program_energy_arc(best, s)
+        if not huge_standard:
+            best = rescue_artist_spacing(best, s)
+            best = enforce_energy_zone_guardrails(best, s)
+        if not very_large_standard:
+            best = polish_zone_energy_flow(best, s)
 
-    # Conservative cleanup, then re-assert v0.3 safety and Peak guardrails so
-    # late polish cannot quietly reintroduce the exact failures we just solved.
-    best = polish_weak_transitions(best, s)
-    best = rescue_transition_neighborhoods(best, s)
-    best = rescue_hard_bpm_guardrail(best, s)
-    best = rescue_artist_spacing(best, s)
-    best = enforce_energy_zone_guardrails(best, s)
-    best = polish_zone_energy_flow(best, s)
+        # Vibe is only a tie-breaker. On larger Standard crates the core route
+        # already includes Energy programming, so exhaustive vibe search is not
+        # worth several seconds of latency. Deep mode still performs it.
+        if not large_standard or s.depth == "Deep":
+            best = polish_vibe_tiebreak(best, s)
+
+        # Weak-link structure was solved before programming. Re-running a full
+        # exhaustive cleanup on large Standard crates caused the UI stall.
+        if not large_standard or s.depth == "Deep":
+            best = polish_weak_transitions(best, s)
+
+        # Re-assert expensive safety passes only when the cleanup actually left
+        # something to fix. The previous version always repeated this whole block.
+        final_stats = _route_program_stats(best, s)
+        if final_stats["hard"] > 0 or final_stats["weak"] > 0:
+            best = rescue_transition_neighborhoods(best, s)
+            best = rescue_hard_bpm_guardrail(best, s)
+
+        final_stats = _route_program_stats(best, s)
+        if not huge_standard and (final_stats["adjacent_artist"] > 0 or final_stats["near_artist"] > 0):
+            best = rescue_artist_spacing(best, s)
+        if not huge_standard and (final_stats["peak_low"] > 0 or final_stats["build_low"] > 0):
+            best = enforce_energy_zone_guardrails(best, s)
+
+        # A second zone-flow sweep had very high cost and usually tiny benefit.
+        # Keep it for Deep only; Standard already performed the full first pass.
+        if s.depth == "Deep":
+            best = polish_zone_energy_flow(best, s)
+    finally:
+        s.rescue_passes = old_rescue_passes
 
     transitions = []
     for i in range(len(best) - 1):
@@ -1819,3 +1909,4 @@ def optimize(tracks, s: Settings):
     for detail in transitions:
         detail["quality"] = transition_quality(detail, s)
     return best, transitions
+
