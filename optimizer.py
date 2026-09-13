@@ -23,7 +23,7 @@ class Settings:
     # forcing a mathematically smooth curve. BPM safety always has veto power.
     energy_arc: str = "Party Zones"  # Off | Smooth | Build Zones | Party Zones
     energy_arc_influence: float = 0.25
-    # Vibe Tie-Breaker: Danceability + Valence only decide between
+    # Vibe Tie-Breaker: Danceability + Mood only decide between
     # otherwise-near-equivalent safe routes. They no longer dilute the main
     # whole-set objective.
     danceability_influence: float = 0.05
@@ -58,7 +58,7 @@ def _cw_delta(n1, n2):
 
 
 def camelot_relationship(k1, k2):
-    """Return (label, score 0..1) using SetFlow's practical DJ rules."""
+    """Return (label, score 0..1) using Mixweave's practical DJ rules."""
     a = parse_camelot(k1)
     b = parse_camelot(k2)
     if not a or not b:
@@ -323,7 +323,7 @@ def energy_zone_for_position(index, n, mode="Party Zones"):
     """Return (zone label, desired energy-percentile low, high).
 
     Zones intentionally overlap. A real dance floor can breathe inside a section;
-    SetFlow only needs the *overall programming direction* to make sense.
+    Mixweave only needs the *overall programming direction* to make sense.
     """
     if n <= 1:
         return "Open", 0.0, 1.0
@@ -462,10 +462,10 @@ def _neutralized_values(order, field, default=50.0):
 
 
 def vibe_program_score(order, s):
-    """Soft Danceability + Valence programming score, 0..1.
+    """Soft Danceability + Mood programming score, 0..1.
 
     Danceability rewards a stable floor groove with a modest lift into Build/Peak.
-    Valence is intentionally looser: it favors emotional coherence inside a zone
+    Mood is intentionally looser: it favors emotional coherence inside a zone
     rather than forcing a happy/sad storyline. Missing data is neutral.
     """
     if len(order) < 2:
@@ -476,7 +476,7 @@ def vibe_program_score(order, s):
         return 1.0
 
     dance, _ = _neutralized_values(order, "Danceability")
-    valence, _ = _neutralized_values(order, "Valence")
+    valence, _ = _neutralized_values(order, "Mood") if any("Mood" in t for t in order) else _neutralized_values(order, "Valence")
     dance_sorted = sorted(dance)
 
     dance_pen = []
@@ -511,7 +511,7 @@ def vibe_program_score(order, s):
 
 def vibe_program_details(order, s):
     dance, dmiss = _neutralized_values(order, "Danceability")
-    valence, vmiss = _neutralized_values(order, "Valence")
+    valence, vmiss = _neutralized_values(order, "Mood") if any("Mood" in t for t in order) else _neutralized_values(order, "Valence")
     return {
         "score": round(vibe_program_score(order, s) * 100, 1),
         "dance_start": round(dance[0], 1) if dance else None,
@@ -563,7 +563,7 @@ def objective(order, s):
     base_mix = sum(scores) / len(scores)
     programmed = arc * arc_weight + base_mix * (1.0 - arc_weight)
     # Vibe Polish is deliberately *not* blended into the core objective.
-    # Danceability/Valence are handled later as tie-breakers among routes that
+    # Danceability/Mood are handled later as tie-breakers among routes that
     # are already effectively equivalent on BPM safety, weak links, artist
     # spacing, transition quality, and Energy Zones.
     return (-severe, -hard, -weak, -adjacent_artist, -near_artist, -pain, programmed, min(scores), sum(scores))
@@ -1175,7 +1175,7 @@ def enforce_energy_zone_guardrails(order, s):
 
 
 def polish_vibe_tiebreak(order, s):
-    """Use Danceability + Valence only as a tie-breaker.
+    """Use Danceability + Mood only as a tie-breaker.
 
     A candidate must stay in the exact same BPM-safety/weak-link/artist envelope,
     remain within a very small average-transition window, and keep Energy Zone
@@ -1390,7 +1390,7 @@ def optimize(tracks, s: Settings):
     best = rescue_artist_spacing(best, s)
     best = enforce_energy_zone_guardrails(best, s)
     # Only after the route is safe, programmed, and artist-clean do
-    # Danceability + Valence get to break near-ties.
+    # Danceability + Mood get to break near-ties.
     best = polish_vibe_tiebreak(best, s)
     # Keep the proven v1 weak-link cleanup, then re-assert the two v1.1
     # programming guardrails so cleanup cannot quietly undo them.
