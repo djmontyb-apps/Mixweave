@@ -15,10 +15,11 @@ from optimizer import (
     energy_zone_labels,
     artist_spacing_stats,
     vibe_program_details,
+    energy_flow_stats,
 )
 
 APP_NAME = "Mixweave"
-APP_VERSION = "0.3"
+APP_VERSION = "0.4"
 
 st.set_page_config(page_title=f"{APP_NAME} {APP_VERSION}", page_icon="🎚️", layout="wide")
 
@@ -149,7 +150,7 @@ def _pdf_safe(value):
     return text.encode("latin-1", "replace").decode("latin-1")
 
 
-def build_mixweave_pdf(out, health, health_note, avg_score, weak, bad_bpm, max_bpm_diff, programming):
+def build_mixweave_pdf(out, health, health_note, avg_score, weak, bad_bpm, max_bpm_diff, programming, flow):
     """Create the clean DJ-facing Mixweave running-order PDF."""
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -180,7 +181,8 @@ def build_mixweave_pdf(out, health, health_note, avg_score, weak, bad_bpm, max_b
         Paragraph(
             _pdf_safe(
                 f"Set Health: {health} | Avg transition {avg_score:.1f} | Weak links {weak} | "
-                f"Hard BPM jumps {bad_bpm} | Worst BPM delta {max_bpm_diff:.1f} | Programming {programming:.1f}"
+                f"Hard BPM jumps {bad_bpm} | Worst BPM delta {max_bpm_diff:.1f} | "
+                f"Programming {programming:.1f} | Energy flow {flow:.1f}"
             ),
             sub_style,
         ),
@@ -403,6 +405,7 @@ if st.button("⚡ Build my Mixweave", type="primary", width="stretch"):
     max_bpm_diff = max(bpm_diffs) if bpm_diffs else 0.0
     arc = energy_arc_details(ordered, settings)
     vibe = vibe_program_details(ordered, settings)
+    flow = energy_flow_stats(ordered, settings)
     adjacent_artist, near_artist = artist_spacing_stats(ordered)
     health, health_note = set_health(avg_score, weak, bad_bpm, max_bpm_diff, adjacent_artist, arc["score"])
 
@@ -426,7 +429,11 @@ if st.button("⚡ Build my Mixweave", type="primary", width="stretch"):
         f"Weak {qualities.get('Weak', 0)}",
     ]))
     if energy_arc != "Off":
-        st.caption(f"Energy: start {arc['start']} • peak {arc['peak']} at track {arc.get('peak_position', '—')} • finish {arc['finish']} • Vibe {vibe['score']:.1f} • near artist repeats {near_artist}")
+        st.caption(
+            f"Energy: start {arc['start']} • peak {arc['peak']} at track {arc.get('peak_position', '—')} • "
+            f"finish {arc['finish']} • Energy flow {flow['score']:.1f} • whiplash flags {flow['whiplash']} • "
+            f"Vibe {vibe['score']:.1f} • near artist repeats {near_artist}"
+        )
 
     if bad_bpm:
         st.warning("A hard BPM transition remains. Review that link before performing the set.")
@@ -470,7 +477,7 @@ if st.button("⚡ Build my Mixweave", type="primary", width="stretch"):
 
     pdf_bytes = build_mixweave_pdf(
         out, health, health_note, avg_score, weak, bad_bpm,
-        max_bpm_diff, arc["score"],
+        max_bpm_diff, arc["score"], flow["score"],
     )
     d2.download_button(
         "Download PDF",

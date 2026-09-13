@@ -23,6 +23,10 @@ class Settings:
     # forcing a mathematically smooth curve. BPM safety always has veto power.
     energy_arc: str = "Party Zones"  # Off | Smooth | Build Zones | Party Zones
     energy_arc_influence: float = 0.25
+    # v0.4 Programming Flow: smooth obvious Energy whiplash *inside* each zone
+    # without overriding BPM safety or weak-link protection.
+    zone_flow_influence: float = 0.20
+    zone_flow_max_jump: float = 28.0
     # Vibe Tie-Breaker: Danceability + Mood only decide between
     # otherwise-near-equivalent safe routes. They no longer dilute the main
     # whole-set objective.
@@ -402,6 +406,75 @@ def energy_guardrail_stats(order, s):
     return {"peak_low": peak_low, "build_low": build_low}
 
 
+def energy_flow_stats(order, s):
+    """Measure Energy continuity inside and between programming zones.
+
+    v0.4 does not force a mathematical ramp. It only flags obvious whiplash:
+    very large adjacent Energy swings inside the same zone, large drops while
+    entering Build/Peak, and deep drops inside those upward-driving sections.
+    Finish remains deliberately flexible so a DJ can land softly or end strong.
+    """
+    if len(order) < 2 or getattr(s, "energy_arc", "Off") == "Off":
+        return {"score": 100.0, "whiplash": 0, "reverse": 0, "max_jump": 0.0, "opener_hot": 0}
+
+    vals, _ = _energy_values(order)
+    zones = energy_zone_labels(order, s)
+    sorted_vals = sorted(vals)
+    opener_hot = 1 if zones and zones[0] == "Warm-up" and _energy_percentile(vals[0], sorted_vals) > 0.55 else 0
+    penalties = []
+    whiplash = 0
+    reverse = 0
+    max_jump = 0.0
+    default_jump = float(getattr(s, "zone_flow_max_jump", 28.0))
+
+    for i in range(len(order) - 1):
+        e1, e2 = vals[i], vals[i + 1]
+        delta = e2 - e1
+        jump = abs(delta)
+        max_jump = max(max_jump, jump)
+        z1, z2 = zones[i], zones[i + 1]
+
+        if z1 == z2:
+            if z1 == "Peak":
+                limit = min(default_jump, 22.0)
+            elif z1 == "Build":
+                limit = min(default_jump, 24.0)
+            elif z1 == "Warm-up":
+                limit = min(default_jump, 26.0)
+            else:
+                limit = default_jump
+
+            if jump > limit:
+                whiplash += 1
+                penalties.append(min(1.0, (jump - limit) / 35.0))
+            else:
+                penalties.append(0.0)
+
+            if z1 == "Build" and delta < -14:
+                reverse += 1
+                penalties[-1] = max(penalties[-1], min(1.0, (-delta - 14) / 28.0))
+            elif z1 == "Peak" and delta < -18:
+                reverse += 1
+                penalties[-1] = max(penalties[-1], min(1.0, (-delta - 18) / 28.0))
+        else:
+            pen = 0.0
+            if z2 in ("Groove", "Build", "Peak") and delta < -16:
+                reverse += 1
+                pen = min(1.0, (-delta - 16) / 30.0)
+            penalties.append(pen)
+
+    if opener_hot:
+        penalties.append(0.65)
+    score = 100.0 * max(0.0, 1.0 - sum(penalties) / max(len(penalties), 1))
+    return {
+        "score": round(score, 2),
+        "whiplash": int(whiplash),
+        "reverse": int(reverse),
+        "max_jump": round(max_jump, 2),
+        "opener_hot": int(opener_hot),
+    }
+
+
 def artist_spacing_stats(order):
     """Count artist collisions that matter to a live DJ set."""
     artists = [str(t.get("Artist", "")).strip().lower() for t in order]
@@ -523,7 +596,7 @@ def vibe_program_details(order, s):
 
 
 def objective(order, s):
-    """v0.3 whole-set objective: protect the weakest links first.
+    """v0.4 whole-set objective: protect the weakest links first.
 
     A route with one disastrous transition should lose to a route with slightly
     lower average scores but no disaster. This is the anti-garbage-pile rule.
@@ -1099,6 +1172,11 @@ def _route_program_stats(order, s):
         "near_artist": artist_spacing_stats(order)[1],
         "peak_low": energy_guardrail_stats(order, s)["peak_low"],
         "build_low": energy_guardrail_stats(order, s)["build_low"],
+        "flow": energy_flow_stats(order, s)["score"],
+        "energy_whiplash": energy_flow_stats(order, s)["whiplash"],
+        "energy_reverse": energy_flow_stats(order, s)["reverse"],
+        "max_energy_jump": energy_flow_stats(order, s)["max_jump"],
+        "opener_hot": energy_flow_stats(order, s)["opener_hot"],
     }
 
 
@@ -1166,6 +1244,92 @@ def program_energy_arc(order, s):
         if best_move is None:
             break
         best, base = best_move
+    return best
+
+
+def polish_zone_energy_flow(order, s):
+    """v0.4 Programming Flow pass.
+
+    Smooth obvious Energy whiplash inside the existing zone plan while preserving
+    Mixweave's hierarchy: no new BPM guardrail violation, no additional weak
+    link, no new artist collision, and no regression in Build/Peak guardrails.
+    """
+    if len(order) < 5 or getattr(s, "energy_arc", "Off") == "Off":
+        return list(order)
+
+    best = list(order)
+    base = _route_program_stats(best, s)
+    floor = dict(base)  # cumulative quality/safety budget for the entire pass
+    passes = 2 if s.depth == "Quick" else (6 if s.depth == "Standard" else 10)
+    lo = 1 if s.lock_first else 0
+    hi = len(best) - 1 if s.lock_last else len(best)
+    influence = max(0.0, min(0.50, float(getattr(s, "zone_flow_influence", 0.20))))
+    avg_budget = 0.75 + 3.0 * influence
+    min_budget = 0.75 + 2.5 * influence
+
+    def eligible(st):
+        if st["severe"] > floor["severe"] or st["hard"] > floor["hard"]:
+            return False
+        if st["weak"] > floor["weak"]:
+            return False
+        if st["adjacent_artist"] > floor["adjacent_artist"] or st["near_artist"] > floor["near_artist"]:
+            return False
+        if st["peak_low"] > floor["peak_low"] or st["build_low"] > floor["build_low"]:
+            return False
+        if st["avg"] < floor["avg"] - avg_budget:
+            return False
+        if st["minimum"] < floor["minimum"] - min_budget:
+            return False
+        if st["arc"] < floor["arc"] - 3.0:
+            return False
+        return True
+
+    def rank(st):
+        return (
+            -st["opener_hot"],
+            -st["energy_whiplash"],
+            -st["energy_reverse"],
+            st["flow"],
+            st["arc"],
+            st["minimum"],
+            st["avg"],
+        )
+
+    for _ in range(passes):
+        best_rank = rank(base)
+        choice = None
+        choice_stats = None
+
+        for i in range(lo, hi):
+            for j in range(i + 1, hi):
+                cand = list(best)
+                cand[i], cand[j] = cand[j], cand[i]
+                st = _route_program_stats(cand, s)
+                if not eligible(st):
+                    continue
+                r = rank(st)
+                if r > best_rank:
+                    best_rank, choice, choice_stats = r, cand, st
+
+        for i in range(lo, hi):
+            for j in range(lo, hi + 1):
+                if i == j or i + 1 == j:
+                    continue
+                cand = list(best)
+                tr = cand.pop(i)
+                dest = j if j < i else j - 1
+                cand.insert(max(lo, min(dest, len(cand))), tr)
+                st = _route_program_stats(cand, s)
+                if not eligible(st):
+                    continue
+                r = rank(st)
+                if r > best_rank:
+                    best_rank, choice, choice_stats = r, cand, st
+
+        if choice is None:
+            break
+        best, base = choice, choice_stats
+
     return best
 
 
@@ -1617,6 +1781,7 @@ def optimize(tracks, s: Settings):
     best = program_energy_arc(best, s)
     best = rescue_artist_spacing(best, s)
     best = enforce_energy_zone_guardrails(best, s)
+    best = polish_zone_energy_flow(best, s)
 
     # Vibe remains a tie-breaker only.
     best = polish_vibe_tiebreak(best, s)
@@ -1628,6 +1793,7 @@ def optimize(tracks, s: Settings):
     best = rescue_hard_bpm_guardrail(best, s)
     best = rescue_artist_spacing(best, s)
     best = enforce_energy_zone_guardrails(best, s)
+    best = polish_zone_energy_flow(best, s)
 
     transitions = []
     for i in range(len(best) - 1):

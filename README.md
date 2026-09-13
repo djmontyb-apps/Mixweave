@@ -1,4 +1,4 @@
-# Mixweave 0.3
+# Mixweave 0.4
 
 **Mixweave** is a DJ playlist sequencing tool. It takes an already-built crate or playlist and turns it into a more performance-ready running order using the metadata that matters most to a working DJ:
 
@@ -60,6 +60,7 @@ Once the route is mixable, Mixweave shapes the playlist like a set.
 - optional Smooth or Build programming modes
 - artist spacing across the whole set
 - adjacent-track Energy behavior
+- **Programming Flow** pass to reduce obvious Energy whiplash inside a zone without giving back BPM safety
 
 ### Vibe Polish
 
@@ -95,7 +96,7 @@ Mixweave exports the optimized playlist plus DJ-facing transition information:
 - `Camelot Move` — harmonic relationship
 - `Effective BPM Δ` — practical BPM difference after legitimate half/double interpretation
 
-The app also reports **Set Health**, weak links, hard BPM jumps, worst BPM difference, programming score, and artist collisions.
+The app also reports **Set Health**, weak links, hard BPM jumps, worst BPM difference, programming score, **Energy flow**, and artist collisions.
 
 ## Design philosophy
 
@@ -114,14 +115,17 @@ The app also reports **Set Health**, weak links, hard BPM jumps, worst BPM diffe
 - `requirements.txt` — Python dependencies
 - `README.md` — project overview
 
-## Mixweave 0.3 changes
+## Mixweave 0.4 changes
 
-- Renamed the app and output from SetFlow to **Mixweave**
-- Added native **Crate Hackers PDF** import
-- Added PDF table cleanup for wrapped titles/artists and floating-point metadata
-- Standardized Crate Hackers `Key` to internal `Camelot Key`
-- Replaced user-facing `Valence` terminology with **Mood**
-- Retained CSV/XLS/XLSX import compatibility
-- Added explicit warning for legacy/non-Camelot key data
+- Added **Programming Flow** as a conservative post-programming pass
+- Detects obvious adjacent Energy whiplash inside Warm-up, Groove, Build, and Peak
+- Protects the opener from being moved to an obviously over-hot Warm-up position
+- Preserves the v0.3 BPM hierarchy: no new hard BPM jumps are allowed in the flow pass
+- Will not add weak links, artist collisions, or regress Build/Peak Energy guardrails
+- Added an **Energy flow** score and whiplash count to the results summary
+- Added Energy flow to the DJ-facing PDF Set Health line
+- Retains Crate Hackers PDF import plus Excel/PDF/CSV export
 
-The optimizer architecture remains the proven tempo-safe, harmonic, energy-programmed engine developed before the rename.
+### v0.4 benchmark goal
+
+The Kurt & Anika cocktail crate remains the primary regression test. v0.4 is intended to keep the v0.3 achievement of **zero hard BPM jumps** while reducing avoidable Energy sawtooths inside the programmed sections. The optimizer still prefers a tempo-safe route over a cosmetically smoother Energy curve when the two conflict.
