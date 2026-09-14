@@ -1754,7 +1754,8 @@ def _mark_escape_reasons(order, transitions, s):
     return out
 
 
-GENRE_FAMILIES = ["Pop", "Hip-Hop/R&B", "Rock", "Country", "Latin", "Disco/Funk", "EDM", "Reggae", "Soul/Motown", "Jazz"]
+GENRE_FAMILIES = ["Pop", "Hip-Hop/R&B", "Rock", "Country", "Latin", "Disco/Funk", "EDM", "Reggae", "Soul/Motown", "Jazz",
+                  "Line Dance / Group Participation", "Acoustic", "Instrumental / Classical"]
 
 
 def genre_family(value):
@@ -1764,6 +1765,9 @@ def genre_family(value):
         if text == re.sub(r"[^a-z0-9]+", " ", family.lower()).strip():
             return family
     rules = [
+        ("Line Dance / Group Participation", r"line dance|line dancing|group participation|participation"),
+        ("Instrumental / Classical", r"instrumental|classical"),
+        ("Acoustic", r"acoustic|unplugged"),
         ("EDM", r"house|techno|trance|dubstep|drum and bass|drum bass|dnb|electronic|electro"),
         ("Latin", r"latin|salsa|cumbia|bachata|merengue|reggaeton|reggaetón|dembow"),
         ("Country", r"country|bluegrass|americana"),

@@ -1,4 +1,13 @@
-# Mixweave 1.2 — Genre Pockets
+# Mixweave 1.2.1 — Genre Pockets
+
+## 1.2.1 dropdown update
+
+Adds Line Dance / Group Participation, Acoustic, and Instrumental / Classical.
+These are selectable programming families, so your chosen label drives the
+pocket preference even if the song could fit another genre. Existing saved
+families remain valid. PDF import, exports, and the speed-fixed sequencing
+logic are retained. Stronger pocket-building and optional decade metadata
+remain future work.
 
 Built on the supplied PDF-capable v0.5 app and separately patched optimizer.
 The adaptive search budgets, 55+ track Standard fast path, Mood handling,

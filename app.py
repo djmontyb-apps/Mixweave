@@ -21,7 +21,7 @@ from optimizer import (
 )
 
 APP_NAME = "Mixweave"
-APP_VERSION = "1.2"
+APP_VERSION = "1.2.1"
 
 st.set_page_config(page_title=f"{APP_NAME} {APP_VERSION}", page_icon="🎚️", layout="wide")
 
