@@ -18,16 +18,16 @@ class Settings:
     min_transition_target: float = 60.0
     energy_influence: float = 0.15
     artist_spacing: float = 0.08
+    # Genre Pockets: prefer short, useful musical-family runs without ever
+    # overriding tempo safety. Three tracks is the target; 2-4 is healthy.
+    genre_pockets: bool = True
+    genre_pocket_influence: float = 0.15
     energy_mode: str = "Smooth"   # Smooth | Build (adjacent-track behavior)
     # Programming Brain: program the set in broad Energy Zones rather than
     # forcing a mathematically smooth curve. BPM safety always has veto power.
     energy_arc: str = "Party Zones"  # Off | Smooth | Build Zones | Party Zones
     energy_arc_influence: float = 0.25
-    # v0.5 Zone Shape: smooth Energy flow *inside* each zone with zone-specific direction
-    # without overriding BPM safety or weak-link protection.
-    zone_flow_influence: float = 0.20
-    zone_flow_max_jump: float = 28.0
-    # Vibe Tie-Breaker: Danceability + Mood only decide between
+    # Vibe Tie-Breaker: Danceability + Valence only decide between
     # otherwise-near-equivalent safe routes. They no longer dilute the main
     # whole-set objective.
     danceability_influence: float = 0.05
@@ -94,7 +94,7 @@ def camelot_relationship(k1, k2):
         wheel_dist = min(d, 12 - d)
         return "Other Camelot", max(0.24, 0.52 - 0.06 * wheel_dist)
 
-    # Opposite letter, different number: generally not a core SetFlow rule.
+    # Opposite letter, different number: generally not a core Mixweave rule.
     wheel_dist = min(abs(n1 - n2), 12 - abs(n1 - n2))
     if wheel_dist == 1:
         return "Diagonal Key", 0.58
@@ -399,94 +399,11 @@ def energy_guardrail_stats(order, s):
     for i, actual in enumerate(vals):
         zone = energy_zone_for_position(i, len(vals), getattr(s, "energy_arc", "Party Zones"))[0]
         pct = _energy_percentile(actual, sorted_vals)
-        if zone == "Peak" and pct < 0.62:
+        if zone == "Peak" and pct < 0.52:
             peak_low += 1
-        elif zone == "Build" and pct < 0.30:
+        elif zone == "Build" and pct < 0.25:
             build_low += 1
     return {"peak_low": peak_low, "build_low": build_low}
-
-
-def energy_flow_stats(order, s):
-    """Measure Energy continuity inside and between programming zones.
-
-    v0.4 does not force a mathematical ramp. It only flags obvious whiplash:
-    very large adjacent Energy swings inside the same zone, large drops while
-    entering Build/Peak, and deep drops inside those upward-driving sections.
-    Finish remains deliberately flexible so a DJ can land softly or end strong.
-    """
-    if len(order) < 2 or getattr(s, "energy_arc", "Off") == "Off":
-        return {"score": 100.0, "whiplash": 0, "reverse": 0, "shape": 0, "max_jump": 0.0, "opener_hot": 0}
-
-    vals, _ = _energy_values(order)
-    zones = energy_zone_labels(order, s)
-    sorted_vals = sorted(vals)
-    opener_hot = 1 if zones and zones[0] == "Warm-up" and _energy_percentile(vals[0], sorted_vals) > 0.55 else 0
-    penalties = []
-    whiplash = 0
-    reverse = 0
-    shape = 0
-    max_jump = 0.0
-    default_jump = float(getattr(s, "zone_flow_max_jump", 28.0))
-
-    for i in range(len(order) - 1):
-        e1, e2 = vals[i], vals[i + 1]
-        delta = e2 - e1
-        jump = abs(delta)
-        max_jump = max(max_jump, jump)
-        z1, z2 = zones[i], zones[i + 1]
-
-        if z1 == z2:
-            if z1 == "Peak":
-                limit = min(default_jump, 22.0)
-            elif z1 == "Build":
-                limit = min(default_jump, 24.0)
-            elif z1 == "Warm-up":
-                limit = min(default_jump, 26.0)
-            else:
-                limit = default_jump
-
-            if jump > limit:
-                whiplash += 1
-                penalties.append(min(1.0, (jump - limit) / 35.0))
-            else:
-                penalties.append(0.0)
-
-            if z1 == "Build" and delta < -14:
-                reverse += 1
-                penalties[-1] = max(penalties[-1], min(1.0, (-delta - 14) / 28.0))
-            elif z1 == "Peak" and delta < -18:
-                reverse += 1
-                penalties[-1] = max(penalties[-1], min(1.0, (-delta - 18) / 28.0))
-
-            # v0.5 Zone Shape: Warm-up should gently rise, Build should clearly
-            # bias upward, and Peak should avoid deep collapses. Groove breathes.
-            if z1 == "Warm-up" and delta < -12:
-                shape += 1
-                penalties[-1] = max(penalties[-1], min(1.0, (-delta - 12) / 30.0))
-            elif z1 == "Build" and delta < -8:
-                shape += 1
-                penalties[-1] = max(penalties[-1], min(1.0, (-delta - 8) / 26.0))
-            elif z1 == "Peak" and delta < -12:
-                shape += 1
-                penalties[-1] = max(penalties[-1], min(1.0, (-delta - 12) / 28.0))
-        else:
-            pen = 0.0
-            if z2 in ("Groove", "Build", "Peak") and delta < -16:
-                reverse += 1
-                pen = min(1.0, (-delta - 16) / 30.0)
-            penalties.append(pen)
-
-    if opener_hot:
-        penalties.append(0.65)
-    score = 100.0 * max(0.0, 1.0 - sum(penalties) / max(len(penalties), 1))
-    return {
-        "score": round(score, 2),
-        "whiplash": int(whiplash),
-        "reverse": int(reverse),
-        "shape": int(shape),
-        "max_jump": round(max_jump, 2),
-        "opener_hot": int(opener_hot),
-    }
 
 
 def artist_spacing_stats(order):
@@ -502,6 +419,88 @@ def artist_spacing_stats(order):
         if i + 2 < len(artists) and artists[i + 2] == artist:
             near += 1
     return adjacent, near
+
+
+def genre_family(value):
+    """Collapse messy export genres into practical open-format families.
+
+    The matching is intentionally broad and conservative. Unknown or blank
+    labels stay unclassified instead of being forced into the wrong pocket.
+    """
+    if value is None:
+        return None
+    raw = str(value).strip().lower()
+    if not raw or raw in {"nan", "none", "unknown", "n/a"}:
+        return None
+    text = re.sub(r"[^a-z0-9]+", " ", raw)
+
+    rules = (
+        ("Latin", ("latin", "salsa", "cumbia", "bachata", "merengue", "reggaeton", "dembow", "tejano", "mariachi")),
+        ("Country", ("country", "bluegrass", "americana", "honky tonk")),
+        ("EDM", ("edm", "house", "techno", "trance", "dubstep", "drum bass", "dnb", "electro", "dance electronic")),
+        ("Reggae", ("reggae", "dancehall", "ska", "dub")),
+        ("Disco/Funk", ("disco", "funk", "boogie")),
+        ("Hip-Hop/R&B", ("hip hop", "hiphop", "rap", "trap", "r b", "rnb", "new jack swing")),
+        ("Rock", ("rock", "metal", "punk", "grunge", "alternative", "indie rock", "emo")),
+        ("Soul/Motown", ("soul", "motown", "gospel")),
+        ("Jazz", ("jazz", "swing", "big band")),
+        ("Pop", ("pop", "top 40", "adult contemporary", "singer songwriter")),
+    )
+    for family, terms in rules:
+        if any(term in text for term in terms):
+            return family
+    return None
+
+
+def track_genre_family(track):
+    return genre_family(track.get("Genre"))
+
+
+def genre_pocket_stats(order):
+    """Summarize broad-family continuity without rewarding giant blocks."""
+    families = [track_genre_family(t) for t in order]
+    totals = {}
+    for family in families:
+        if family:
+            totals[family] = totals.get(family, 0) + 1
+
+    islands = 0
+    pocket_links = 0
+    for i, family in enumerate(families):
+        if not family:
+            continue
+        left = i > 0 and families[i - 1] == family
+        right = i + 1 < len(families) and families[i + 1] == family
+        if left:
+            pocket_links += 1
+        if totals.get(family, 0) >= 2 and not left and not right:
+            islands += 1
+
+    run_lengths = []
+    i = 0
+    while i < len(families):
+        family = families[i]
+        if not family:
+            i += 1
+            continue
+        j = i + 1
+        while j < len(families) and families[j] == family:
+            j += 1
+        run_lengths.append(j - i)
+        i = j
+
+    possible_links = sum(max(0, count - 1) for count in totals.values())
+    score = 100.0 if possible_links == 0 else 100.0 * pocket_links / possible_links
+    return {
+        "classified": sum(1 for family in families if family),
+        "families": len(totals),
+        "islands": islands,
+        "pocket_links": pocket_links,
+        "possible_links": possible_links,
+        "runs_2_4": sum(1 for length in run_lengths if 2 <= length <= 4),
+        "long_runs": sum(1 for length in run_lengths if length > 4),
+        "score": round(score, 1),
+    }
 
 
 def energy_arc_score(order, s):
@@ -549,10 +548,10 @@ def _neutralized_values(order, field, default=50.0):
 
 
 def vibe_program_score(order, s):
-    """Soft Danceability + Mood programming score, 0..1.
+    """Soft Danceability + Valence programming score, 0..1.
 
     Danceability rewards a stable floor groove with a modest lift into Build/Peak.
-    Mood is intentionally looser: it favors emotional coherence inside a zone
+    Valence is intentionally looser: it favors emotional coherence inside a zone
     rather than forcing a happy/sad storyline. Missing data is neutral.
     """
     if len(order) < 2:
@@ -563,7 +562,7 @@ def vibe_program_score(order, s):
         return 1.0
 
     dance, _ = _neutralized_values(order, "Danceability")
-    valence, _ = _neutralized_values(order, "Mood") if any("Mood" in t for t in order) else _neutralized_values(order, "Valence")
+    valence, _ = _neutralized_values(order, "Valence")
     dance_sorted = sorted(dance)
 
     dance_pen = []
@@ -598,7 +597,7 @@ def vibe_program_score(order, s):
 
 def vibe_program_details(order, s):
     dance, dmiss = _neutralized_values(order, "Danceability")
-    valence, vmiss = _neutralized_values(order, "Mood") if any("Mood" in t for t in order) else _neutralized_values(order, "Valence")
+    valence, vmiss = _neutralized_values(order, "Valence")
     return {
         "score": round(vibe_program_score(order, s) * 100, 1),
         "dance_start": round(dance[0], 1) if dance else None,
@@ -610,7 +609,7 @@ def vibe_program_details(order, s):
 
 
 def objective(order, s):
-    """v0.4 whole-set objective: protect the weakest links first.
+    """v0.3 whole-set objective: protect the weakest links first.
 
     A route with one disastrous transition should lose to a route with slightly
     lower average scores but no disaster. This is the anti-garbage-pile rule.
@@ -650,7 +649,7 @@ def objective(order, s):
     base_mix = sum(scores) / len(scores)
     programmed = arc * arc_weight + base_mix * (1.0 - arc_weight)
     # Vibe Polish is deliberately *not* blended into the core objective.
-    # Danceability/Mood are handled later as tie-breakers among routes that
+    # Danceability/Valence are handled later as tie-breakers among routes that
     # are already effectively equivalent on BPM safety, weak links, artist
     # spacing, transition quality, and Energy Zones.
     return (-severe, -hard, -weak, -adjacent_artist, -near_artist, -pain, programmed, min(scores), sum(scores))
@@ -857,7 +856,7 @@ def anchor_first_order(tracks, s):
 def canonical_bpm(track):
     """Return a practical one-number BPM for whole-playlist geography.
 
-    This is *not* used to score the final transition. It only helps SetFlow
+    This is *not* used to score the final transition. It only helps Mixweave
     build a safe backbone. High double-time values are folded once when that
     lands them in the normal DJ working range. Pair scoring still uses
     effective_bpm_pair(), so the final math remains transition-specific.
@@ -869,102 +868,6 @@ def canonical_bpm(track):
         return b / 2.0
     return b
 
-
-
-def bpm_safe_path_order(tracks, s, max_calls=120000):
-    """v0.3 BPM-safe path planner.
-
-    Build a graph whose edges are transitions at or inside the BPM guardrail,
-    including legitimate half/double-time matches. A bounded backtracking search
-    then looks for a Hamiltonian path through that graph. When one exists, this
-    gives Mixweave a candidate with *zero* hard BPM jumps before harmony and
-    programming polish begin.
-
-    The search uses a low-degree-first heuristic (protect tempo orphans) and is
-    bounded so large/hostile crates fall back to the existing planners quickly.
-    """
-    n = len(tracks)
-    if n <= 2:
-        return list(tracks)
-
-    graph = [[] for _ in range(n)]
-    edge_score = {}
-    for i in range(n):
-        for j in range(i + 1, n):
-            sc, d = transition_score(tracks[i], tracks[j], s)
-            diff = d.get("bpm_diff")
-            if diff is None or diff <= s.bpm_guardrail:
-                graph[i].append(j)
-                graph[j].append(i)
-                edge_score[(i, j)] = edge_score[(j, i)] = sc
-
-    # A disconnected safe graph cannot contain a fully safe route.
-    seen = set()
-    stack = [0]
-    while stack:
-        u = stack.pop()
-        if u in seen:
-            continue
-        seen.add(u)
-        stack.extend(v for v in graph[u] if v not in seen)
-    if len(seen) != n:
-        return None
-
-    calls = 0
-    fixed_start = 0 if s.lock_first else None
-    fixed_last = n - 1 if s.lock_last else None
-    starts = [fixed_start] if fixed_start is not None else sorted(range(n), key=lambda i: len(graph[i]))
-
-    def dfs(path, used_mask):
-        nonlocal calls
-        calls += 1
-        if calls > max_calls:
-            return None
-        if len(path) == n:
-            if fixed_last is None or path[-1] == fixed_last:
-                return list(path)
-            return None
-
-        u = path[-1]
-        candidates = [v for v in graph[u] if not ((used_mask >> v) & 1)]
-        # Locked last track may only be consumed at the final step.
-        if fixed_last is not None and len(path) < n - 1:
-            candidates = [v for v in candidates if v != fixed_last]
-
-        def onward(v):
-            available = sum(1 for w in graph[v] if not ((used_mask >> w) & 1))
-            return (available, -edge_score.get((u, v), 0.0))
-        candidates.sort(key=onward)
-
-        for v in candidates:
-            new_mask = used_mask | (1 << v)
-            # Cheap orphan pruning: after choosing v, at most one unused track
-            # may have no unused neighbor (that track could be the final endpoint).
-            stranded = 0
-            for x in range(n):
-                if (new_mask >> x) & 1:
-                    continue
-                if fixed_last is not None and x == fixed_last and len(path) == n - 1:
-                    continue
-                if not any(not ((new_mask >> w) & 1) for w in graph[x]):
-                    stranded += 1
-                    if stranded > 1:
-                        break
-            if stranded > 1:
-                continue
-            result = dfs(path + [v], new_mask)
-            if result is not None:
-                return result
-        return None
-
-    for start in starts:
-        calls = 0
-        result = dfs([start], 1 << start)
-        if result is not None:
-            return [tracks[i] for i in result]
-        if fixed_start is not None:
-            break
-    return None
 
 def bpm_spine_order(tracks, s):
     """v0.5 bridge planner: create a tempo-safe backbone, then polish it.
@@ -1176,29 +1079,89 @@ def _route_program_stats(order, s):
             severe += 1
         if pct < s.min_transition_target:
             weak += 1
-    # These helpers each scan the whole route. Compute them once per candidate;
-    # the old code recalculated artist/guardrail/flow stats many times here,
-    # multiplying the cost of every swap/relocation considered by the polishers.
-    adjacent_artist, near_artist = artist_spacing_stats(order)
-    guard = energy_guardrail_stats(order, s)
-    flow = energy_flow_stats(order, s)
+    genre = genre_pocket_stats(order)
     return {
         "severe": severe, "hard": hard, "weak": weak,
         "avg": sum(scores)/max(len(scores),1),
         "minimum": min(scores) if scores else 100.0,
         "arc": energy_zone_score(order, s) * 100.0,
         "vibe": vibe_program_score(order, s) * 100.0,
-        "adjacent_artist": adjacent_artist,
-        "near_artist": near_artist,
-        "peak_low": guard["peak_low"],
-        "build_low": guard["build_low"],
-        "flow": flow["score"],
-        "energy_whiplash": flow["whiplash"],
-        "energy_reverse": flow["reverse"],
-        "energy_shape": flow.get("shape", 0),
-        "max_energy_jump": flow["max_jump"],
-        "opener_hot": flow["opener_hot"],
+        "adjacent_artist": artist_spacing_stats(order)[0],
+        "near_artist": artist_spacing_stats(order)[1],
+        "peak_low": energy_guardrail_stats(order, s)["peak_low"],
+        "build_low": energy_guardrail_stats(order, s)["build_low"],
+        "genre_islands": genre["islands"],
+        "genre_score": genre["score"],
+        "genre_runs": genre["runs_2_4"],
     }
+
+
+def program_genre_pockets(order, s):
+    """Group repeated broad genres into safe 2-4 track pockets.
+
+    Only targeted island relocations are considered. A move cannot add a hard
+    BPM jump, weak link, or artist collision, and it must preserve the broad
+    Energy Zone plan. This makes genre a preference, never a veto.
+    """
+    if len(order) < 4 or not getattr(s, "genre_pockets", True):
+        return list(order)
+    if genre_pocket_stats(order)["classified"] < 2:
+        return list(order)
+
+    best = list(order)
+    base = _route_program_stats(best, s)
+    influence = max(0.0, min(0.30, float(getattr(s, "genre_pocket_influence", 0.15))))
+    loss_budget = 0.35 + 5.0 * influence
+    arc_budget = 0.75 + 8.0 * influence
+    passes = 3 if s.depth == "Quick" else (7 if s.depth == "Standard" else 11)
+
+    for _ in range(passes):
+        families = [track_genre_family(t) for t in best]
+        totals = {f: families.count(f) for f in set(families) if f}
+        lo = 1 if s.lock_first else 0
+        hi = len(best) - 1 if s.lock_last else len(best)
+        island_indices = []
+        for i in range(lo, hi):
+            family = families[i]
+            if not family or totals.get(family, 0) < 2:
+                continue
+            left = i > 0 and families[i - 1] == family
+            right = i + 1 < len(families) and families[i + 1] == family
+            if not left and not right:
+                island_indices.append(i)
+
+        choice = None
+        choice_key = (-base["genre_islands"], base["genre_score"], base["genre_runs"], base["minimum"], base["avg"])
+        for i in island_indices:
+            family = families[i]
+            peers = [j for j in range(lo, hi) if j != i and families[j] == family]
+            for peer in peers:
+                # Insert immediately before or after a matching-family track.
+                for target in (peer, peer + 1):
+                    cand = list(best)
+                    track = cand.pop(i)
+                    dest = target if target < i else target - 1
+                    dest = max(lo, min(dest, len(cand) - (1 if s.lock_last else 0)))
+                    cand.insert(dest, track)
+                    st = _route_program_stats(cand, s)
+                    if st["severe"] > base["severe"] or st["hard"] > base["hard"] or st["weak"] > base["weak"]:
+                        continue
+                    if st["adjacent_artist"] > base["adjacent_artist"] or st["near_artist"] > base["near_artist"]:
+                        continue
+                    if st["peak_low"] > base["peak_low"] or st["build_low"] > base["build_low"]:
+                        continue
+                    if st["avg"] < base["avg"] - loss_budget or st["minimum"] < base["minimum"] - 1.5:
+                        continue
+                    if st["arc"] < base["arc"] - arc_budget:
+                        continue
+                    key = (-st["genre_islands"], st["genre_score"], st["genre_runs"], st["minimum"], st["avg"])
+                    if key > choice_key:
+                        choice_key = key
+                        choice = (cand, st)
+        if choice is None:
+            break
+        best, base = choice
+    return best
 
 
 def program_energy_arc(order, s):
@@ -1265,93 +1228,6 @@ def program_energy_arc(order, s):
         if best_move is None:
             break
         best, base = best_move
-    return best
-
-
-def polish_zone_energy_flow(order, s):
-    """v0.5 Zone Shape pass.
-
-    Smooth obvious Energy whiplash inside the existing zone plan while preserving
-    Mixweave's hierarchy: no new BPM guardrail violation, no additional weak
-    link, no new artist collision, and no regression in Build/Peak guardrails.
-    """
-    if len(order) < 5 or getattr(s, "energy_arc", "Off") == "Off":
-        return list(order)
-
-    best = list(order)
-    base = _route_program_stats(best, s)
-    floor = dict(base)  # cumulative quality/safety budget for the entire pass
-    passes = 2 if s.depth == "Quick" else (6 if s.depth == "Standard" else 10)
-    lo = 1 if s.lock_first else 0
-    hi = len(best) - 1 if s.lock_last else len(best)
-    influence = max(0.0, min(0.50, float(getattr(s, "zone_flow_influence", 0.20))))
-    avg_budget = 0.75 + 3.0 * influence
-    min_budget = 0.75 + 2.5 * influence
-
-    def eligible(st):
-        if st["severe"] > floor["severe"] or st["hard"] > floor["hard"]:
-            return False
-        if st["weak"] > floor["weak"]:
-            return False
-        if st["adjacent_artist"] > floor["adjacent_artist"] or st["near_artist"] > floor["near_artist"]:
-            return False
-        if st["peak_low"] > floor["peak_low"] or st["build_low"] > floor["build_low"]:
-            return False
-        if st["avg"] < floor["avg"] - avg_budget:
-            return False
-        if st["minimum"] < floor["minimum"] - min_budget:
-            return False
-        if st["arc"] < floor["arc"] - 3.0:
-            return False
-        return True
-
-    def rank(st):
-        return (
-            -st["opener_hot"],
-            -st["energy_shape"],
-            -st["energy_whiplash"],
-            -st["energy_reverse"],
-            st["flow"],
-            st["arc"],
-            st["minimum"],
-            st["avg"],
-        )
-
-    for _ in range(passes):
-        best_rank = rank(base)
-        choice = None
-        choice_stats = None
-
-        for i in range(lo, hi):
-            for j in range(i + 1, hi):
-                cand = list(best)
-                cand[i], cand[j] = cand[j], cand[i]
-                st = _route_program_stats(cand, s)
-                if not eligible(st):
-                    continue
-                r = rank(st)
-                if r > best_rank:
-                    best_rank, choice, choice_stats = r, cand, st
-
-        for i in range(lo, hi):
-            for j in range(lo, hi + 1):
-                if i == j or i + 1 == j:
-                    continue
-                cand = list(best)
-                tr = cand.pop(i)
-                dest = j if j < i else j - 1
-                cand.insert(max(lo, min(dest, len(cand))), tr)
-                st = _route_program_stats(cand, s)
-                if not eligible(st):
-                    continue
-                r = rank(st)
-                if r > best_rank:
-                    best_rank, choice, choice_stats = r, cand, st
-
-        if choice is None:
-            break
-        best, base = choice, choice_stats
-
     return best
 
 
@@ -1457,7 +1333,7 @@ def enforce_energy_zone_guardrails(order, s):
 
 
 def polish_vibe_tiebreak(order, s):
-    """Use Danceability + Mood only as a tie-breaker.
+    """Use Danceability + Valence only as a tie-breaker.
 
     A candidate must stay in the exact same BPM-safety/weak-link/artist envelope,
     remain within a very small average-transition window, and keep Energy Zone
@@ -1607,133 +1483,6 @@ def polish_weak_transitions(order, s):
 
     return best
 
-
-def rescue_transition_neighborhoods(order, s):
-    """v0.3 neighborhood rescue for clusters of weak transitions.
-
-    A weak transition is often not an isolated problem: two or three tracks can
-    form a bad neighborhood because a bridge was consumed elsewhere. This pass
-    removes short blocks around the weakest edges and reinserts them (in either
-    direction) anywhere in the route. Whole-set safety remains lexicographic:
-    severe BPM cliffs, hard guardrail violations, and weak links must improve
-    before average score or programming polish matter.
-    """
-    if len(order) < 5:
-        return list(order)
-    best = list(order)
-    best_obj = objective(best, s)
-    passes = 1 if s.depth == "Quick" else (2 if s.depth == "Standard" else 4)
-
-    for _ in range(passes):
-        n = len(best)
-        edge_rank = []
-        for i in range(n - 1):
-            sc, d = transition_score(best[i], best[i + 1], s)
-            diff = d.get("bpm_diff")
-            hard = 1 if diff is not None and diff > s.bpm_guardrail else 0
-            severe = 1 if diff is not None and diff > s.bpm_guardrail + 4 else 0
-            weak = 1 if sc * 100 < s.min_transition_target else 0
-            edge_rank.append(((severe, hard, weak, -sc), i))
-        targets = [i for _, i in sorted(edge_rank, reverse=True)[:min(4, len(edge_rank))]]
-
-        choice = None
-        choice_obj = best_obj
-        for edge_i in targets:
-            # Try 2-, 3-, and 4-track neighborhoods surrounding the bad edge.
-            for length in (2, 3):
-                starts = {edge_i - length + 2, edge_i - 1, edge_i}
-                for start in starts:
-                    start = max(0, min(start, n - length))
-                    end = start + length
-                    if s.lock_first and start == 0:
-                        continue
-                    if s.lock_last and end == n:
-                        continue
-                    block = best[start:end]
-                    remainder = best[:start] + best[end:]
-                    orientations = [block]
-                    if length > 1:
-                        orientations.append(list(reversed(block)))
-                    for orient in orientations:
-                        lo = 1 if s.lock_first else 0
-                        hi = len(remainder) if not s.lock_last else len(remainder) - 1
-                        for pos in range(lo, hi + 1):
-                            cand = remainder[:pos] + orient + remainder[pos:]
-                            obj = objective(cand, s)
-                            if obj > choice_obj:
-                                choice_obj = obj
-                                choice = cand
-        if choice is None:
-            break
-        best, best_obj = choice, choice_obj
-    return best
-
-
-def rescue_hard_bpm_guardrail(order, s):
-    """v0.3 final BPM veto pass.
-
-    Exhaustively try relocations, swaps, and short reversals whenever a route
-    still contains a transition beyond the BPM guardrail. The pass accepts any
-    route with fewer severe/hard BPM violations first, even if a small amount of
-    harmonic/programming score is sacrificed. This reflects Mixweave's core rule:
-    a pretty Camelot match cannot rescue a bad tempo cliff.
-    """
-    if len(order) < 4:
-        return list(order)
-    best = list(order)
-    base = _route_program_stats(best, s)
-    passes = 2 if s.depth == "Quick" else (6 if s.depth == "Standard" else 10)
-    lo = 1 if s.lock_first else 0
-    hi = len(best) - 1 if s.lock_last else len(best)
-
-    def rank(st):
-        return (-st["severe"], -st["hard"], -st["weak"], st["minimum"], st["avg"], st["arc"], st["vibe"])
-
-    for _ in range(passes):
-        if base["hard"] == 0:
-            break
-        best_rank = rank(base)
-        choice = None
-        choice_stats = None
-        n = len(best)
-
-        # Relocations and swaps give the optimizer a full-route chance to use an
-        # overlooked bridge instead of leaving a tempo island at one end.
-        for i in range(lo, hi):
-            for j in range(lo, hi + 1):
-                if i == j or i + 1 == j:
-                    continue
-                cand = list(best)
-                tr = cand.pop(i)
-                dest = j if j < i else j - 1
-                cand.insert(max(lo, min(dest, len(cand))), tr)
-                st = _route_program_stats(cand, s)
-                r = rank(st)
-                if r > best_rank:
-                    best_rank, choice, choice_stats = r, cand, st
-            for j in range(i + 1, hi):
-                cand = list(best)
-                cand[i], cand[j] = cand[j], cand[i]
-                st = _route_program_stats(cand, s)
-                r = rank(st)
-                if r > best_rank:
-                    best_rank, choice, choice_stats = r, cand, st
-
-        # Short reversals are valuable when the right bridge tracks are present
-        # but facing the wrong direction around a tempo island.
-        for i in range(lo, hi - 2):
-            for j in range(i + 2, min(hi, i + 9)):
-                cand = best[:i] + list(reversed(best[i:j + 1])) + best[j + 1:]
-                st = _route_program_stats(cand, s)
-                r = rank(st)
-                if r > best_rank:
-                    best_rank, choice, choice_stats = r, cand, st
-
-        if choice is None:
-            break
-        best, base = choice, choice_stats
-    return best
-
 def _mark_escape_reasons(order, transitions, s):
     """Label key-breaking but tempo-practical links as BPM Escape when appropriate."""
     if not s.escape_mode:
@@ -1753,78 +1502,25 @@ def _mark_escape_reasons(order, transitions, s):
 
 
 def optimize(tracks, s: Settings):
-    """Build a DJ-usable route with adaptive performance guardrails.
-
-    v1.2 performance fix: the musical rules are unchanged, but expensive search
-    depth now scales with playlist size. Standard mode no longer spends an
-    unbounded amount of time re-polishing the same route or exploring a huge
-    Hamiltonian-path search on larger crates.
-    """
     if not tracks:
         return [], []
 
     n = len(tracks)
-
-    # Very large Standard crates use the same scoring rules with a deliberately
-    # smaller search surface. This prevents the UI from appearing hung on 55+
-    # tracks while still honoring BPM guardrails and the whole-set objective.
-    ultra_large_standard = (s.depth == "Standard" and n >= 55)
-    if ultra_large_standard:
-        candidates = [bpm_spine_order(tracks, s), greedy_order(tracks, s, None)]
-        candidates.append(insertion_order(tracks, s))
-        improved = []
-        for idx, cand in enumerate(candidates):
-            old_seed = s.seed
-            s.seed = old_seed + idx * 97
-            improved.append(improve_local(cand, s, min(120, max(60, 2 * n))))
-            s.seed = old_seed
-        best = max(improved, key=lambda o: objective(o, s))
-        old_rescue_passes = s.rescue_passes
-        s.rescue_passes = min(old_rescue_passes, 2)
-        try:
-            best = rescue_weak_links(best, s)
-            best = rescue_hard_bpm_guardrail(best, s)
-        finally:
-            s.rescue_passes = old_rescue_passes
-        transitions = []
-        for i in range(len(best) - 1):
-            _, detail = transition_score(best[i], best[i + 1], s)
-            transitions.append(detail)
-        transitions = _mark_escape_reasons(best, transitions, s)
-        for detail in transitions:
-            detail["quality"] = transition_quality(detail, s)
-        return best, transitions
-
-    # Search budgets are deliberately conservative for live use. Deep remains
-    # available when the user explicitly wants more exploration.
     if s.depth == "Quick":
         starts = [None]
-        local_iters = min(220, max(80, 5 * n))
+        local_iters = min(300, 8 * n)
         use_insertion = False
-        safe_path_calls = min(2500, max(500, 50 * n))
-        rescue_cap = 2
     elif s.depth == "Deep":
-        starts = [None] + list(range(min(n, 7)))
-        local_iters = min(5000, max(1600, 22 * n))
+        starts = [None] + list(range(min(n, 10)))
+        local_iters = min(9000, max(2500, 35 * n))
         use_insertion = True
-        safe_path_calls = min(40000, max(8000, 500 * n))
-        rescue_cap = 6
     else:
-        # Standard is the normal working mode: broad candidate diversity, but
-        # bounded enough that 30-60 track playlists return predictably.
-        starts = [None] + list(range(min(n, 3 if n >= 36 else 4)))
-        local_iters = min(1800, max(500, 10 * n))
+        starts = [None] + list(range(min(n, 5)))
+        local_iters = min(3500, max(900, 18 * n))
         use_insertion = True
-        safe_path_calls = min(10000, max(2500, 140 * n))
-        rescue_cap = 3 if n >= 30 else 4
 
     candidates = [anchor_first_order(tracks, s)]
     if s.bpm_spine:
-        # The safe-path planner is NP-hard in the worst case, so it must always
-        # run with an explicit budget. bpm_spine_order() remains the fast fallback.
-        safe_route = bpm_safe_path_order(tracks, s, max_calls=safe_path_calls)
-        if safe_route is not None:
-            candidates.append(safe_route)
         candidates.append(bpm_spine_order(tracks, s))
     if use_insertion:
         candidates.append(insertion_order(tracks, s))
@@ -1835,7 +1531,7 @@ def optimize(tracks, s: Settings):
         candidates.append(greedy_order(tracks, s, st))
 
     improved = []
-    per_candidate = max(80, local_iters // max(len(candidates), 1))
+    per_candidate = max(150, local_iters // max(len(candidates), 1))
     for idx, cand in enumerate(candidates):
         # Offset seed so candidates explore different local moves reproducibly.
         old_seed = s.seed
@@ -1844,62 +1540,24 @@ def optimize(tracks, s: Settings):
         s.seed = old_seed
 
     best = max(improved, key=lambda o: objective(o, s))
-
-    # Temporarily cap deterministic rescue loops for Standard/Quick. This does
-    # not change their acceptance rules; it only prevents repeated no-gain scans.
-    old_rescue_passes = s.rescue_passes
-    s.rescue_passes = min(old_rescue_passes, rescue_cap)
-    try:
-        # Solve tempo/weak-link structure before programming polish.
-        best = rescue_weak_links(best, s)
-        best = rescue_transition_neighborhoods(best, s)
-        best = rescue_hard_bpm_guardrail(best, s)
-
-        # Programming Brain: broad Energy Zones are already part of objective().
-        # On larger Standard crates, avoid the old O(n^3)-style exhaustive
-        # all-swap/all-relocation polishers. Keep the cheaper guardrail passes
-        # that enforce the same DJ rules without searching every permutation.
-        large_standard = (s.depth == "Standard" and n >= 30)
-        very_large_standard = (s.depth == "Standard" and n >= 40)
-        huge_standard = (s.depth == "Standard" and n >= 45)
-        if not large_standard:
-            best = program_energy_arc(best, s)
-        if not huge_standard:
-            best = rescue_artist_spacing(best, s)
-            best = enforce_energy_zone_guardrails(best, s)
-        if not very_large_standard:
-            best = polish_zone_energy_flow(best, s)
-
-        # Vibe is only a tie-breaker. On larger Standard crates the core route
-        # already includes Energy programming, so exhaustive vibe search is not
-        # worth several seconds of latency. Deep mode still performs it.
-        if not large_standard or s.depth == "Deep":
-            best = polish_vibe_tiebreak(best, s)
-
-        # Weak-link structure was solved before programming. Re-running a full
-        # exhaustive cleanup on large Standard crates caused the UI stall.
-        if not large_standard or s.depth == "Deep":
-            best = polish_weak_transitions(best, s)
-
-        # Re-assert expensive safety passes only when the cleanup actually left
-        # something to fix. The previous version always repeated this whole block.
-        final_stats = _route_program_stats(best, s)
-        if final_stats["hard"] > 0 or final_stats["weak"] > 0:
-            best = rescue_transition_neighborhoods(best, s)
-            best = rescue_hard_bpm_guardrail(best, s)
-
-        final_stats = _route_program_stats(best, s)
-        if not huge_standard and (final_stats["adjacent_artist"] > 0 or final_stats["near_artist"] > 0):
-            best = rescue_artist_spacing(best, s)
-        if not huge_standard and (final_stats["peak_low"] > 0 or final_stats["build_low"] > 0):
-            best = enforce_energy_zone_guardrails(best, s)
-
-        # A second zone-flow sweep had very high cost and usually tiny benefit.
-        # Keep it for Deep only; Standard already performed the full first pass.
-        if s.depth == "Deep":
-            best = polish_zone_energy_flow(best, s)
-    finally:
-        s.rescue_passes = old_rescue_passes
+    # Explicitly repair the weakest links before finalizing.
+    best = rescue_weak_links(best, s)
+    # Programming Brain: reshape the safe route into broad Energy Zones
+    # while preserving BPM safety and artist separation.
+    best = program_energy_arc(best, s)
+    best = rescue_artist_spacing(best, s)
+    best = enforce_energy_zone_guardrails(best, s)
+    # v1.2 Genre Pockets is the final programming pass. It may improve broad
+    # musical-family continuity only inside the already-safe route envelope.
+    best = program_genre_pockets(best, s)
+    # Only after the route is safe, programmed, and artist-clean do
+    # Danceability + Valence get to break near-ties.
+    best = polish_vibe_tiebreak(best, s)
+    # Keep the proven v1 weak-link cleanup, then re-assert the two v1.1
+    # programming guardrails so cleanup cannot quietly undo them.
+    best = polish_weak_transitions(best, s)
+    best = rescue_artist_spacing(best, s)
+    best = enforce_energy_zone_guardrails(best, s)
 
     transitions = []
     for i in range(len(best) - 1):
@@ -1909,4 +1567,3 @@ def optimize(tracks, s: Settings):
     for detail in transitions:
         detail["quality"] = transition_quality(detail, s)
     return best, transitions
-
