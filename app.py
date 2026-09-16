@@ -1,7 +1,7 @@
 import io
 import pandas as pd
 import streamlit as st
-from optimizer_v1_2_2 import (
+from optimizer import (
     Settings,
     optimize,
     energy_arc_details,
