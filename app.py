@@ -1,5 +1,7 @@
 import io
+import re
 import pandas as pd
+import pdfplumber
 import streamlit as st
 from optimizer import (
     Settings,
@@ -37,6 +39,66 @@ div[data-testid="stButton"] button[kind="primary"] {font-weight:700; min-height:
 )
 
 
+def _clean_text(value):
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value).replace("\n", " ")).strip()
+
+
+def _clean_number(value):
+    try:
+        x = float(_clean_text(value))
+        if not pd.notna(x):
+            return None
+        return round(x, 2)
+    except Exception:
+        return None
+
+
+def load_crate_hackers_pdf(file):
+    """Read a modern Crate Hackers playlist PDF directly from its table layout."""
+    rows = []
+    playlist_title = ""
+    file.seek(0)
+    with pdfplumber.open(file) as pdf:
+        if pdf.pages:
+            first_text = pdf.pages[0].extract_text() or ""
+            lines = [_clean_text(x) for x in first_text.splitlines() if _clean_text(x)]
+            if lines:
+                playlist_title = lines[0]
+        for page in pdf.pages:
+            for table in page.extract_tables() or []:
+                if not table or len(table) < 2:
+                    continue
+                header = [_clean_text(x).lower() for x in table[0]]
+                if not ({"title", "artist", "bpm", "danceability", "energy", "mood"} <= set(header)):
+                    continue
+                for raw in table[1:]:
+                    cells = dict(zip(header, raw))
+                    number, title, artist, bpm, key, dance, energy, mood = (
+                        cells.get(c) for c in ("#", "title", "artist", "bpm", "key", "danceability", "energy", "mood")
+                    )
+                    if not _clean_text(title) or not _clean_text(artist):
+                        continue
+                    rows.append({
+                        "#": _clean_number(number),
+                        "Title": _clean_text(title),
+                        "Artist": _clean_text(artist),
+                        "BPM": _clean_number(bpm),
+                        "Camelot Key": _clean_text(key).upper(),
+                        "Danceability": _clean_number(dance),
+                        "Energy": _clean_number(energy),
+                        "Mood": _clean_number(mood),
+                        "Genre Family": _clean_text(cells.get("genre family", cells.get("genre", cells.get("genres", "")))),
+                    })
+    if not rows:
+        raise ValueError("No Crate Hackers playlist table was found in this PDF.")
+    df = pd.DataFrame(rows)
+    df = df.drop_duplicates(subset=["#", "Title", "Artist"], keep="first").reset_index(drop=True)
+    df.attrs["playlist_title"] = playlist_title
+    return df
+
+
 def normalize_columns(df):
     """Accept common playlist-export header variants without changing the optimizer schema."""
     aliases = {
@@ -62,6 +124,8 @@ def normalize_columns(df):
 
 def load_playlist(file):
     name = file.name.lower()
+    if name.endswith(".pdf"):
+        return normalize_columns(load_crate_hackers_pdf(file))
     if name.endswith(".csv"):
         df = pd.read_csv(file)
     else:
@@ -184,7 +248,7 @@ st.markdown(
 )
 st.markdown('</div>', unsafe_allow_html=True)
 
-uploaded = st.file_uploader("Upload a playlist", type=["xlsx", "xls", "csv"])
+uploaded = st.file_uploader("Upload a playlist", type=["pdf", "xlsx", "xls", "csv"])
 st.caption("Required: Title, Artist, BPM, Camelot Key, Energy  •  Optional: Danceability, Valence, Popularity")
 
 required = ["Title", "Artist", "BPM", "Camelot Key", "Energy"]
