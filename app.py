@@ -1,4 +1,5 @@
 import io
+import hashlib
 import re
 import pandas as pd
 import pdfplumber
@@ -11,6 +12,14 @@ from optimizer import (
     artist_spacing_stats,
     vibe_program_details,
 )
+
+
+GENRE_FAMILIES = [
+    "Pop", "Hip-Hop/R&B", "Rock", "Country", "Latin", "Disco/Funk",
+    "EDM", "Reggae", "Soul/Motown", "Jazz",
+    "Line Dance / Group Participation", "Acoustic",
+    "Instrumental / Classical",
+]
 
 st.set_page_config(page_title="Mixweave 1.2.2", page_icon="🎚️", layout="wide")
 
@@ -308,6 +317,31 @@ if vibe_mode != "Off":
     missing_optional = [c for c in ["Danceability", "Valence"] if c not in df.columns]
     if missing_optional:
         st.caption("Vibe tie-breaker: " + ", ".join(missing_optional) + " missing — neutral scoring will be used.")
+
+
+st.subheader("Genre Families")
+if "Genre Family" not in df.columns:
+    df["Genre Family"] = ""
+
+df["Genre Family"] = df["Genre Family"].fillna("").astype(str)
+classified = int(df["Genre Family"].str.strip().ne("").sum())
+st.caption(f"{classified}/{len(df)} tracks have a genre family. Review or assign them below before optimizing.")
+
+with st.expander("Review or assign genre families", expanded=True):
+    genre_editor = st.data_editor(
+        df[["Title", "Artist", "Genre Family"]],
+        hide_index=True,
+        disabled=["Title", "Artist"],
+        width="stretch",
+        column_config={
+            "Genre Family": st.column_config.SelectboxColumn(
+                "Genre Family", options=[""] + GENRE_FAMILIES
+            )
+        },
+        key="genre_editor_" + hashlib.sha256(uploaded.getvalue()).hexdigest(),
+    )
+    df["Genre Family"] = genre_editor["Genre Family"].fillna("")
+    st.caption("Use your DJ judgment for crossover tracks. These Genre Family choices are passed into the Mixweave optimizer.")
 
 with st.expander("Preview uploaded playlist", expanded=False):
     st.dataframe(df, width="stretch", hide_index=True)
