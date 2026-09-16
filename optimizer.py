@@ -214,7 +214,28 @@ def energy_score(e1, e2, mode="Smooth"):
     return max(0.18, 0.62 - (d - 20) / 75.0), False
 
 
+_TRANSITION_CACHE = {}
+
+def _settings_score_signature(s):
+    return (
+        s.key_weight, s.bpm_weight, s.bpm_tolerance, s.bpm_guardrail,
+        s.allow_half_double, s.energy_influence, s.artist_spacing, s.energy_mode,
+        getattr(s, "half_double_penalty", 0.10),
+        getattr(s, "energy_cliff_threshold", 20.0),
+        getattr(s, "energy_cliff_penalty", 0.22),
+        getattr(s, "genre_run_influence", 0.035),
+    )
+
 def transition_score(a, b, s: Settings, force_escape=False):
+    key = (id(a), id(b), bool(force_escape), _settings_score_signature(s))
+    cached = _TRANSITION_CACHE.get(key)
+    if cached is not None:
+        return cached[0], dict(cached[1])
+    result = _transition_score_uncached(a, b, s, force_escape)
+    _TRANSITION_CACHE[key] = (result[0], dict(result[1]))
+    return result[0], dict(result[1])
+
+def _transition_score_uncached(a, b, s: Settings, force_escape=False):
     relation, ks = camelot_relationship(a.get("Camelot Key"), b.get("Camelot Key"))
     bs, bpm_diff, eb1, eb2, tempo_mode, bpm_zone = bpm_mixability(
         a.get("BPM"), b.get("BPM"), s.bpm_tolerance, s.bpm_guardrail,
@@ -606,9 +627,7 @@ def objective(order, s):
             weak += 1
         if d.get("energy_cliff"):
             energy_cliffs += 1
-            pain += (s.min_transition_target - pct) ** 2 / 25.0
-        if d.get("energy_cliff"):
-            energy_cliffs += 1
+            pain += max(0.0, s.min_transition_target - pct) ** 2 / 25.0
             pain += max(0.0, float(d.get("energy_drop", 0.0)) - s.energy_cliff_threshold) * 0.35
         if d.get("tempo_mode") != "Normal":
             pain += 0.35
@@ -1054,6 +1073,8 @@ def _route_program_stats(order, s):
             severe += 1
         if pct < s.min_transition_target:
             weak += 1
+        if d.get("energy_cliff"):
+            energy_cliffs += 1
     genre_singletons, genre_same_links = genre_run_stats(order)
     return {
         "severe": severe, "hard": hard, "weak": weak, "energy_cliffs": energy_cliffs,
@@ -1410,7 +1431,9 @@ def optimize(tracks, s: Settings):
     if not tracks:
         return [], []
 
+    _TRANSITION_CACHE.clear()
     n = len(tracks)
+    large_set = n >= 80
     if s.depth == "Quick":
         starts = [None]
         local_iters = min(300, 8 * n)
@@ -1437,6 +1460,8 @@ def optimize(tracks, s: Settings):
 
     improved = []
     per_candidate = max(150, local_iters // max(len(candidates), 1))
+    if large_set:
+        per_candidate = min(per_candidate, 180)
     for idx, cand in enumerate(candidates):
         # Offset seed so candidates explore different local moves reproducibly.
         old_seed = s.seed
@@ -1445,6 +1470,11 @@ def optimize(tracks, s: Settings):
         s.seed = old_seed
 
     best = max(improved, key=lambda o: objective(o, s))
+    original_depth = s.depth
+    original_rescue_passes = s.rescue_passes
+    if large_set:
+        s.depth = "Quick"
+        s.rescue_passes = min(s.rescue_passes, 2)
     # Explicitly repair the weakest links before finalizing.
     best = rescue_weak_links(best, s)
     # Programming Brain: reshape the safe route into broad Energy Zones
@@ -1460,6 +1490,8 @@ def optimize(tracks, s: Settings):
     best = polish_weak_transitions(best, s)
     best = rescue_artist_spacing(best, s)
     best = enforce_energy_zone_guardrails(best, s)
+    s.depth = original_depth
+    s.rescue_passes = original_rescue_passes
 
     transitions = []
     for i in range(len(best) - 1):
