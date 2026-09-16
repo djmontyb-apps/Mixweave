@@ -1,4 +1,4 @@
-# Mixweave 1.2.1 — Genre Pockets
+# Mixweave 1.2.2 — Genre Pockets
 
 ## 1.2.1 dropdown update
 
