@@ -42,7 +42,7 @@ class Settings:
     # harmonic optimization. This prevents the optimizer from spending every
     # useful bridge and leaving a 15-40 BPM cliff near the end.
     bpm_spine: bool = True
-    # v1.2.2 DJ Common-Sense guardrails.
+    # v1.3 DJ Common-Sense guardrails.
     half_double_penalty: float = 0.10
     energy_cliff_threshold: float = 20.0
     energy_cliff_penalty: float = 0.22
@@ -255,13 +255,13 @@ def _transition_score_uncached(a, b, s: Settings, force_escape=False):
     es, energy_missing = energy_score(a.get("Energy"), b.get("Energy"), s.energy_mode)
     score = harmonic_mix * (1.0 - s.energy_influence) + es * s.energy_influence
 
-    # v1.2.2: half/double-time is an escape route, not equivalent to a normal
+    # v1.3: half/double-time is an escape route, not equivalent to a normal
     # tempo match. It remains useful for 70/140-style records, but a normal-BPM
     # neighbor should win when the rest of the musical evidence is comparable.
     if tempo_mode != "Normal" and bpm_diff < 999:
         score -= max(0.0, min(0.25, getattr(s, "half_double_penalty", 0.10)))
 
-    # v1.2.2: protect the dance floor from sudden energy collapses. A large
+    # v1.3: protect the dance floor from sudden energy collapses. A large
     # downward jump can still survive if no safer route exists, but BPM/key math
     # can no longer make a 79 -> 13 energy cliff look like a great transition.
     e1 = _clean_energy(a.get("Energy"))
@@ -1477,19 +1477,27 @@ def optimize(tracks, s: Settings):
         s.rescue_passes = min(s.rescue_passes, 2)
     # Explicitly repair the weakest links before finalizing.
     best = rescue_weak_links(best, s)
-    # Programming Brain: reshape the safe route into broad Energy Zones
-    # while preserving BPM safety and artist separation.
-    best = program_energy_arc(best, s)
-    best = rescue_artist_spacing(best, s)
-    best = enforce_energy_zone_guardrails(best, s)
-    # Only after the route is safe, programmed, and artist-clean do
-    # Danceability + Valence get to break near-ties.
-    best = polish_vibe_tiebreak(best, s)
-    # Keep the proven v1 weak-link cleanup, then re-assert the two v1.1
-    # programming guardrails so cleanup cannot quietly undo them.
-    best = polish_weak_transitions(best, s)
-    best = rescue_artist_spacing(best, s)
-    best = enforce_energy_zone_guardrails(best, s)
+
+    # v1.3 large-set performance path.  The exhaustive programming polishers
+    # below test O(n^2) candidate moves and rescore the whole route for each
+    # candidate, which becomes O(n^3) work on reception-sized playlists.
+    # For 80+ tracks the main objective/local search already scores BPM, key,
+    # energy, genre runs, artist spacing and programming.  Keep that DJ brain
+    # plus targeted weak-link rescue, but skip the redundant exhaustive polish.
+    if not large_set:
+        # Programming Brain: reshape the safe route into broad Energy Zones
+        # while preserving BPM safety and artist separation.
+        best = program_energy_arc(best, s)
+        best = rescue_artist_spacing(best, s)
+        best = enforce_energy_zone_guardrails(best, s)
+        # Only after the route is safe, programmed, and artist-clean do
+        # Danceability + Valence get to break near-ties.
+        best = polish_vibe_tiebreak(best, s)
+        # Keep the proven weak-link cleanup, then re-assert the programming
+        # guardrails so cleanup cannot quietly undo them.
+        best = polish_weak_transitions(best, s)
+        best = rescue_artist_spacing(best, s)
+        best = enforce_energy_zone_guardrails(best, s)
     s.depth = original_depth
     s.rescue_passes = original_rescue_passes
 

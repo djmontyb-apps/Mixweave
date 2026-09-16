@@ -21,7 +21,7 @@ GENRE_FAMILIES = [
     "Instrumental / Classical",
 ]
 
-st.set_page_config(page_title="Mixweave 1.2.2", page_icon="🎚️", layout="wide")
+st.set_page_config(page_title="Mixweave 1.3", page_icon="🎚️", layout="wide")
 
 st.markdown(
     """
@@ -155,7 +155,7 @@ def set_health(avg_score, weak, hard_bpm, max_bpm_diff, adjacent_artist, program
 
 
 with st.sidebar:
-    st.markdown("### 🎚️ Mixweave 1.2.2")
+    st.markdown("### 🎚️ Mixweave 1.3")
     st.caption("Whole-set DJ sequencing")
 
     mode = st.segmented_control("Preset", ["Smooth", "Balanced", "Harmonic"], default="Balanced")
@@ -470,7 +470,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d1.download_button(
         "Download CSV",
         csv_bytes,
-        file_name="Mixweave_v1.2.2_optimized_playlist.csv",
+        file_name="Mixweave_v1.3_optimized_playlist.csv",
         mime="text/csv",
         width="stretch",
     )
@@ -481,7 +481,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d2.download_button(
         "Download Excel",
         xbuf.getvalue(),
-        file_name="Mixweave_v1.2.2_optimized_playlist.xlsx",
+        file_name="Mixweave_v1.3_optimized_playlist.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",
     )
