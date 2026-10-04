@@ -1,4 +1,4 @@
-# MixWeave 1.4
+# MixWeave 1.4.1
 
 **MixWeave** is a DJ playlist sequencing tool that turns a crate or playlist into a more performance-ready running order using BPM, Camelot key, Energy, artist spacing, genre-family information, and optional vibe metadata.
 
@@ -137,3 +137,16 @@ Matching prefers the exact scanner `File` path. Without a path, only a unique no
 No audio files or scanner reports are published with the app.
 
 Validation: `python -m unittest test_audio_analysis.py`.
+
+
+## Rekordbox genres
+
+MixWeave keeps the original `Genre` label and automatically fills missing `Genre Family` values for recognized musical styles. Existing genre-family choices remain as supplied. Unclear labels (such as Miscellaneous, Billboard, or era folders) and combinations spanning multiple families stay available for review. Genre choices remain in exported CSV/Excel playlists, so reuploading them reuses those choices.
+
+The local scanner can read a Rekordbox collection XML through `--rekordbox`; the user's configured collection is also reused on future scans. Genres can be added to existing results without recomputing Essentia scores. The source is an exported snapshot, not a live connection to Rekordbox. Refresh the export after changing genres.
+
+For playlists without saved genres, expand **Import Rekordbox genres** and upload the exported collection XML. File paths are matched exactly when supplied; otherwise a unique artist/title match is flagged unverified. Duplicate entries for the same file can supply a single consistent genre; conflicting genres and ambiguous editions are left for review. Missing genres stay blank. Matching does not overwrite musical metadata.
+
+The original `Genre` column and mapped `Genre Family` are both displayed and exported. Recognized families use MixWeave's existing programming preferences. No changes to the optimizer are required.
+
+Validation: `python -m unittest test_audio_analysis.py test_genre_metadata.py`.

@@ -70,6 +70,9 @@ def attach_features(playlist, analysis):
         source = candidates[0]
         for field in FEATURES:
             out.at[idx, field] = source[field]
+        for field in ['Genre', 'Genre Source']:
+            if field in source and (field not in out or not text(row.get(field, ''))):
+                out.at[idx, field] = source[field]
         for field in source.index:
             if field.startswith(('Danceability Raw', 'Valence Raw', 'Acousticness Raw')) or field.endswith('Model'):
                 out.at[idx, field] = source[field]
