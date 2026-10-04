@@ -5,6 +5,7 @@ import pandas as pd
 import pdfplumber
 import streamlit as st
 from audio_analysis import attach_features
+from genre_metadata import GENRE_FAMILIES, RekordboxGenres, genre_family
 from optimizer import (
     Settings,
     optimize,
@@ -15,14 +16,7 @@ from optimizer import (
 )
 
 
-GENRE_FAMILIES = [
-    "Pop", "Hip-Hop/R&B", "Rock", "Country", "Latin", "Disco/Funk",
-    "EDM", "Reggae", "Soul/Motown", "Jazz",
-    "Line Dance / Group Participation", "Acoustic",
-    "Instrumental / Classical",
-]
-
-st.set_page_config(page_title="Mixweave 1.4", page_icon="🎚️", layout="wide")
+st.set_page_config(page_title="Mixweave 1.4.1", page_icon="🎚️", layout="wide")
 
 st.markdown(
     """
@@ -99,7 +93,8 @@ def load_crate_hackers_pdf(file):
                         "Danceability": _clean_number(dance),
                         "Energy": _clean_number(energy),
                         "Mood": _clean_number(mood),
-                        "Genre Family": _clean_text(cells.get("genre family", cells.get("genre", cells.get("genres", "")))),
+                        "Genre Family": _clean_text(cells.get("genre family", "")),
+                        "Genre": _clean_text(cells.get("genre", cells.get("genres", ""))),
                     })
     if not rows:
         raise ValueError("No Crate Hackers playlist table was found in this PDF.")
@@ -127,7 +122,9 @@ def normalize_columns(df):
         "pop": "Popularity",
         "popularity": "Popularity",
         "genre family": "Genre Family",
-        "genre": "Genre Family",
+        "genre": "Genre",
+        "genres": "Genre",
+        "location": "File",
     }
     df = df.copy()
     df.columns = [aliases.get(str(c).strip().lower(), str(c).strip()) for c in df.columns]
@@ -158,7 +155,7 @@ def set_health(avg_score, weak, hard_bpm, max_bpm_diff, adjacent_artist, program
 
 
 with st.sidebar:
-    st.markdown("### 🎚️ Mixweave 1.4")
+    st.markdown("### 🎚️ Mixweave 1.4.1")
     st.caption("Whole-set DJ sequencing")
 
     mode = st.segmented_control("Preset", ["Smooth", "Balanced", "Harmonic"], default="Balanced")
@@ -338,15 +335,39 @@ if vibe_mode != "Off":
         st.caption("Vibe tie-breaker: " + ", ".join(missing_optional) + " missing — neutral scoring will be used.")
 
 
+with st.expander("Import Rekordbox genres", expanded=False):
+    st.caption("Upload your exported Rekordbox collection XML. Saved genres will fill missing labels; existing genre choices stay intact.")
+    genre_xml = st.file_uploader("Rekordbox collection", type=["xml"], key="rekordbox_genres")
+    if genre_xml:
+        try:
+            collection = RekordboxGenres(io.BytesIO(genre_xml.getvalue()))
+            if "Genre" not in df:
+                df["Genre"] = ""
+            df["Genre"] = df["Genre"].fillna("").astype(str)
+            for idx, track in df.iterrows():
+                if track["Genre"].strip():
+                    continue
+                genre, source = collection.lookup(
+                    path=next((str(v) for v in [track.get("File"), track.get("Essentia File")] if pd.notna(v) and str(v).strip()), ""),
+                    title=track.get("Title", ""), artist=track.get("Artist", ""))
+                if genre:
+                    df.at[idx, "Genre"] = genre
+                df.at[idx, "Genre Source"] = source
+        except ValueError as error:
+            st.error(str(error))
+
 st.subheader("Genre Families")
 if "Genre Family" not in df.columns:
     df["Genre Family"] = ""
 
 df["Genre Family"] = df["Genre Family"].fillna("").astype(str)
+if "Genre" in df:
+    missing_family = df["Genre Family"].str.strip().eq("")
+    df.loc[missing_family, "Genre Family"] = df.loc[missing_family, "Genre"].fillna("").map(genre_family)
 classified = int(df["Genre Family"].str.strip().ne("").sum())
-st.caption(f"{classified}/{len(df)} tracks have a genre family. Review or assign them below before optimizing.")
+st.caption(f"{classified}/{len(df)} tracks have a genre family. Recognized genres are filled automatically; review any blanks below.")
 
-with st.expander("Review or assign genre families", expanded=True):
+with st.expander("Review or assign genre families", expanded=classified < len(df)):
     genre_editor = st.data_editor(
         df[["Title", "Artist", "Genre Family"]],
         hide_index=True,
@@ -354,7 +375,7 @@ with st.expander("Review or assign genre families", expanded=True):
         width="stretch",
         column_config={
             "Genre Family": st.column_config.SelectboxColumn(
-                "Genre Family", options=[""] + GENRE_FAMILIES
+                "Genre Family", options=[""] + GENRE_FAMILIES + sorted(set(df["Genre Family"]) - set(GENRE_FAMILIES) - {""})
             )
         },
         key="genre_editor_" + hashlib.sha256(uploaded.getvalue()).hexdigest(),
@@ -453,7 +474,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
 
     st.subheader("Optimized running order")
     show_cols = ["Mixweave #", "Title", "Artist", "BPM", "Camelot Key", "Energy"]
-    for col in ["Genre Family", "Danceability", "Valence", "Acousticness", "Loudness LUFS"]:
+    for col in ["Genre", "Genre Family", "Danceability", "Valence", "Acousticness", "Loudness LUFS"]:
         if col in out.columns:
             show_cols.append(col)
     show_cols += ["Program Zone", "Transition Score", "Transition Quality", "Transition Reason", "Effective BPM Δ"]
@@ -492,7 +513,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d1.download_button(
         "Download CSV",
         csv_bytes,
-        file_name="Mixweave_v1.4_optimized_playlist.csv",
+        file_name="Mixweave_v1.4.1_optimized_playlist.csv",
         mime="text/csv",
         width="stretch",
     )
@@ -503,7 +524,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d2.download_button(
         "Download Excel",
         xbuf.getvalue(),
-        file_name="Mixweave_v1.4_optimized_playlist.xlsx",
+        file_name="Mixweave_v1.4.1_optimized_playlist.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",
     )
