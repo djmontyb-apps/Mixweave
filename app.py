@@ -4,6 +4,7 @@ import re
 import pandas as pd
 import pdfplumber
 import streamlit as st
+from audio_analysis import attach_features
 from optimizer import (
     Settings,
     optimize,
@@ -21,7 +22,7 @@ GENRE_FAMILIES = [
     "Instrumental / Classical",
 ]
 
-st.set_page_config(page_title="Mixweave 1.3", page_icon="🎚️", layout="wide")
+st.set_page_config(page_title="Mixweave 1.4", page_icon="🎚️", layout="wide")
 
 st.markdown(
     """
@@ -120,6 +121,8 @@ def normalize_columns(df):
         "dance": "Danceability",
         "danceability": "Danceability",
         "valence": "Valence",
+        "acousticness": "Acousticness",
+        "loudness lufs": "Loudness LUFS",
         "pop.": "Popularity",
         "pop": "Popularity",
         "popularity": "Popularity",
@@ -155,7 +158,7 @@ def set_health(avg_score, weak, hard_bpm, max_bpm_diff, adjacent_artist, program
 
 
 with st.sidebar:
-    st.markdown("### 🎚️ Mixweave 1.3")
+    st.markdown("### 🎚️ Mixweave 1.4")
     st.caption("Whole-set DJ sequencing")
 
     mode = st.segmented_control("Preset", ["Smooth", "Balanced", "Harmonic"], default="Balanced")
@@ -258,7 +261,7 @@ st.markdown(
 st.markdown('</div>', unsafe_allow_html=True)
 
 uploaded = st.file_uploader("Upload a playlist", type=["pdf", "xlsx", "xls", "csv"])
-st.caption("Required: Title, Artist, BPM, Camelot Key, Energy  •  Optional: Danceability, Valence, Popularity")
+st.caption("Required: Title, Artist, BPM, Camelot Key, Energy  •  Optional: Danceability, Valence, Acousticness, Loudness LUFS, Popularity")
 
 required = ["Title", "Artist", "BPM", "Camelot Key", "Energy"]
 
@@ -289,6 +292,20 @@ except Exception as e:
     st.error(f"Could not read that file: {e}")
     st.stop()
 
+with st.expander("Add Essentia analysis", expanded=False):
+    st.caption("Upload the scanner results CSV to add scores to this playlist. Existing BPM, key, and energy stay as supplied.")
+    analysis_file = st.file_uploader("Scanner results", type=["csv"], key="essentia_analysis")
+    if analysis_file:
+        try:
+            df = attach_features(df, normalize_columns(pd.read_csv(analysis_file)))
+        except ValueError as e:
+            st.error(str(e))
+            st.stop()
+        matched = df["Essentia Match"].isin(["Exact file", "Artist/title — recording unverified", "Garth Brooks version — performer differs"]).sum()
+        st.caption(f"{matched}/{len(df)} tracks received Essentia scores. Review the matches below.")
+        st.dataframe(df[["Title", "Artist", "Essentia Match", "Essentia File"]] if "Essentia File" in df else df[["Title", "Artist", "Essentia Match"]], hide_index=True, width="stretch")
+        st.caption("Artist/title matches do not confirm the same recording. When several edits exist, add the exact scanner File path to your playlist.")
+
 missing = [c for c in required if c not in df.columns]
 if missing:
     st.error("Missing required columns: " + ", ".join(missing))
@@ -299,18 +316,20 @@ st.subheader("Playlist ready")
 meta1, meta2, meta3 = st.columns(3)
 meta1.metric("Tracks", len(df))
 
-invalid_keys = ~df["Camelot Key"].astype(str).str.upper().str.match(r"^(1[0-2]|[1-9])[AB]$")
+invalid_keys = ~df["Camelot Key"].astype(str).str.upper().str.match(r"^(1[0-2]|[1-9])[AB](?:/(?:1[0-2]|[1-9])[AB])*$")
 meta2.metric("Valid Camelot keys", f"{len(df) - int(invalid_keys.sum())}/{len(df)}")
 
 energy_num = pd.to_numeric(df["Energy"], errors="coerce")
 suspicious_energy = energy_num.isna() | (energy_num <= 0) | (energy_num > 100)
 meta3.metric("Usable Energy", f"{len(df) - int(suspicious_energy.sum())}/{len(df)}")
 
-optional = [c for c in ["Danceability", "Valence", "Popularity", "Genre Family"] if c in df.columns]
+optional = [c for c in ["Danceability", "Valence", "Acousticness", "Loudness LUFS", "Popularity", "Genre Family"] if c in df.columns]
 if optional:
     st.caption("Optional metadata detected: " + " • ".join(optional))
 if invalid_keys.any():
     st.warning(f"{int(invalid_keys.sum())} track(s) have missing or invalid Camelot keys. Key scoring will stay neutral for those tracks.")
+if df["Camelot Key"].astype(str).str.contains("/", regex=False).any():
+    st.caption("Slash-separated keys indicate a key change. They are preserved; harmonic scoring stays neutral for those tracks.")
 if suspicious_energy.any():
     st.info(f"{int(suspicious_energy.sum())} track(s) have missing/suspicious Energy values. SetFlow treats those as neutral, not literal zero.")
 if vibe_mode != "Off":
@@ -434,11 +453,14 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
 
     st.subheader("Optimized running order")
     show_cols = ["Mixweave #", "Title", "Artist", "BPM", "Camelot Key", "Energy"]
-    for col in ["Genre Family", "Danceability", "Valence"]:
+    for col in ["Genre Family", "Danceability", "Valence", "Acousticness", "Loudness LUFS"]:
         if col in out.columns:
             show_cols.append(col)
     show_cols += ["Program Zone", "Transition Score", "Transition Quality", "Transition Reason", "Effective BPM Δ"]
-    st.dataframe(out[show_cols], width="stretch", hide_index=True)
+    st.dataframe(out[show_cols], width="stretch", hide_index=True, column_config={
+        **{c: st.column_config.NumberColumn(c, format="%.0f") for c in ["Danceability", "Valence", "Acousticness"]},
+        "Loudness LUFS": st.column_config.NumberColumn("Loudness (LUFS)", format="%.1f"),
+    })
 
     with st.expander("Transition details"):
         detail_rows = []
@@ -470,7 +492,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d1.download_button(
         "Download CSV",
         csv_bytes,
-        file_name="Mixweave_v1.3_optimized_playlist.csv",
+        file_name="Mixweave_v1.4_optimized_playlist.csv",
         mime="text/csv",
         width="stretch",
     )
@@ -481,7 +503,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d2.download_button(
         "Download Excel",
         xbuf.getvalue(),
-        file_name="Mixweave_v1.3_optimized_playlist.xlsx",
+        file_name="Mixweave_v1.4_optimized_playlist.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",
     )

@@ -1,4 +1,4 @@
-# MixWeave 1.3
+# MixWeave 1.4
 
 **MixWeave** is a DJ playlist sequencing tool that turns a crate or playlist into a more performance-ready running order using BPM, Camelot key, Energy, artist spacing, genre-family information, and optional vibe metadata.
 
@@ -33,7 +33,7 @@ Popularity may be included in an input file and exported, but it is not a primar
 
 ## Large-playlist performance in 1.3
 
-MixWeave 1.3 adds a dedicated performance path for large playlists (80+ tracks).
+MixWeave 1.4 adds a dedicated performance path for large playlists (80+ tracks).
 
 The main sequencing logic remains intact, but expensive late-stage polishing is restricted so the optimizer does not repeatedly brute-force thousands of full-playlist swaps and relocations. This keeps large open-format playlists practical while preserving the core BPM, Camelot, Energy, artist-spacing, genre, bridge-planning, and weak-transition logic.
 
@@ -122,3 +122,18 @@ For a GitHub/Streamlit update, replace the changed files, commit them, let Strea
 Version 1.3 establishes a clean version number and focuses on large-playlist performance without changing MixWeave's core DJ sequencing philosophy.
 
 Use a large reception/open-format playlist of roughly 80–100+ tracks as a performance benchmark after deployment. The goal is a substantial reduction in optimization time while retaining useful DJ-quality sequencing.
+
+
+## Local Essentia analysis
+
+Upload a scanner CSV directly as a playlist when it contains the required musical metadata, or open **Add Essentia analysis** after uploading a playlist and attach the scanner results CSV. The scanner runs locally against your library; the hosted app reads its results.
+
+Danceability, valence, and acousticness display as whole numbers on the scanner's 0–100 scale. Integrated loudness displays in LUFS. Danceability and valence use the existing optional vibe tie-breaker; acousticness and loudness are displayed and exported for DJ review. Raw scanner scores and model identifiers are retained when attached.
+
+Existing playlist BPM, Camelot key(s), and energy are never replaced. Previous feature values are retained in `Playlist …` columns when Essentia scores are attached. Missing scans retain their existing feature values. Key-changing slash values remain intact and receive neutral harmonic scoring.
+
+Matching prefers the exact scanner `File` path. Without a path, only a unique normalized artist/title match is used, with the recording marked unverified. Multiple local edits require an exact path. A supplied path that does not match is never replaced with a title guess. Brooks Jefferson playlist entries use the user's Garth Brooks recording and show the performer difference. Other performers are not substituted.
+
+No audio files or scanner reports are published with the app.
+
+Validation: `python -m unittest test_audio_analysis.py`.
