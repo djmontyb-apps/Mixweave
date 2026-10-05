@@ -1,4 +1,4 @@
-# MixWeave 1.4.3
+# MixWeave 1.4.4
 
 Half/double-time matches are a last resort: routing prefers fewer 2:1 tempo bridges after protecting BPM guardrails and weak transitions. Greedy selection uses a normal-tempo link whenever it meets the transition target. Genre, energy, and vibe polish cannot add extra 2:1 bridges. Original track BPM values stay unchanged.
 
@@ -171,3 +171,7 @@ Validation: `python test_genre_pockets.py` and `python -m unittest test_pocket_r
 ### Opening choices
 
 Use **Plan the opening** to choose an opener and save particular songs until after the warm-up (first 18% of the set). These choices are stored in the exported Set Role column. The planner moves contiguous blocks and protects genre-pocket quality. If you enable **Allow one deliberate reset for the opening**, it may use at most one transition beyond the BPM guardrail, explicitly labeled **Deliberate reset** for a clean cut or fade. Its original score and BPM difference remain visible. An unresolved placement produces a warning; the planner does not silently claim that every request was met.
+
+### Private reference suggestions
+
+Open **Find songs from your private reference**, upload your personal MixWeave reference JSON, and choose a category. Select songs and explicitly choose each library recording. Download the selected CSV and upload it through the normal playlist input to optimize the set. Chart ranks remain source metadata, not sequencing instructions. Conflicting library records are excluded until reviewed. Private chart/library content is supplied only by the user upload and is not bundled into this repository, read from a shared server path, or stored in an application cache. Existing genre, tempo, key, energy, feature and opening controls still govern the optimizer. The unresolved after-warm-up issue is not fixed by this feature.
