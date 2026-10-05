@@ -2,6 +2,8 @@ import math
 import random
 import re
 from dataclasses import dataclass
+from functools import lru_cache
+from genre_metadata import genre_family, GENRE_FAMILIES
 
 CAMELOT_RE = re.compile(r"^\s*(1[0-2]|[1-9])([AB])\s*$", re.I)
 
@@ -47,6 +49,8 @@ class Settings:
     energy_cliff_threshold: float = 20.0
     energy_cliff_penalty: float = 0.22
     genre_run_influence: float = 0.035
+    genre_pockets: bool = True
+    genre_pocket_influence: float = 0.20
 
 
 def parse_camelot(value):
@@ -1427,6 +1431,109 @@ def _mark_escape_reasons(order, transitions, s):
     return out
 
 
+@lru_cache(maxsize=1024)
+def _cached_genre_family(value):
+    return genre_family(value)
+
+
+def track_genre_family(track):
+    value = track.get("Genre Family")
+    # An explicit blank override means leave this track unclassified.
+    return _cached_genre_family(str(value or "") if "Genre Family" in track else str(track.get("Genre", "") or ""))
+
+def genre_pocket_stats(order):
+    families = [track_genre_family(t) for t in order]
+    totals = {f: families.count(f) for f in set(families) if f}
+    runs = []
+    i = 0
+    while i < len(families):
+        f = families[i]
+        j = i + 1
+        while f and j < len(families) and families[j] == f:
+            j += 1
+        if f:
+            runs.append((f, j - i))
+        i = j
+    # No pressure to break up a single-family EDM/salsa crate.
+    active = len(totals) > 1
+    cost = 0.0
+    islands = 0
+    for f, length in runs:
+        if length == 1 and totals[f] > 1:
+            islands += 1
+            cost += 1.0
+        elif length == 2:
+            cost += 0.12
+        elif length >= 4:
+            cost += 0.08 + 0.25 * (length - 4)
+    return {"cost": cost if active else 0.0, "islands": islands,
+            "classified": sum(totals.values()), "families": len(totals),
+            "pockets": sum(2 <= n <= 4 for _, n in runs)}
+
+def program_genre_pockets(order, s):
+    """Bounded final pass with cumulative safety/quality budgets.
+
+    Same-family continuations are preferred, while clean crossovers remain
+    available. Genre never contributes to the displayed transition score.
+    """
+    best = list(order)
+    influence = max(0.0, min(0.3, s.genre_pocket_influence))
+    info = genre_pocket_stats(best)
+    if not s.genre_pockets or influence == 0 or info["families"] < 2:
+        return best
+    floor = _route_program_stats(best, s)
+    floor_diffs = sorted((transition_score(a, b, s)[1]["bpm_diff"] or 0)
+                         for a, b in zip(best, best[1:]))
+    lo, hi = int(s.lock_first), len(best) - int(s.lock_last)
+    passes = {"Quick": 4, "Standard": 12, "Deep": 20}.get(s.depth, 12)
+    if len(best) >= 80:
+        passes = min(passes, 4)
+    for _ in range(passes):
+        options = []
+        # Rank cheaply before evaluating only the best 240 proposals in detail.
+        for i in range(lo, hi):
+            family = track_genre_family(best[i])
+            if not family:
+                continue
+            for j in range(lo, hi):
+                if i == j or track_genre_family(best[j]) != family:
+                    continue
+                for target in (j, j + 1):
+                    cand = list(best)
+                    item = cand.pop(i)
+                    dest = target - int(target > i)
+                    cand.insert(dest, item)
+                    cost = genre_pocket_stats(cand)["cost"]
+                    if cost < info["cost"] - 1e-8:
+                        options.append((cost, i, target, cand))
+        options.sort(key=lambda x: x[:3])
+        choice = None
+        for cost, _, _, cand in options[:240]:
+            stats = _route_program_stats(cand, s)
+            protected = ("severe", "hard", "weak", "adjacent_artist", "near_artist",
+                         "peak_low", "build_low", "energy_cliffs")
+            if any(stats[k] > floor[k] for k in protected):
+                continue
+            if stats["avg"] < floor["avg"] - (0.5 + 5 * influence):
+                continue
+            if stats["minimum"] < floor["minimum"] - 1.5:
+                continue
+            if stats["arc"] < floor["arc"] - 2:
+                continue
+            diffs = sorted((transition_score(a, b, s)[1]["bpm_diff"] or 0)
+                           for a, b in zip(cand, cand[1:]))
+            if diffs and (diffs[-1] > floor_diffs[-1] or sum(diffs) > sum(floor_diffs) + 2):
+                continue
+            key = (cost, -stats["avg"], -stats["minimum"])
+            if choice is None or key < choice[0]:
+                choice = (key, cand)
+        if choice is None:
+            break
+        best = choice[1]
+        info = genre_pocket_stats(best)
+    return best
+
+
 def optimize(tracks, s: Settings):
     if not tracks:
         return [], []
@@ -1500,6 +1607,9 @@ def optimize(tracks, s: Settings):
         best = enforce_energy_zone_guardrails(best, s)
     s.depth = original_depth
     s.rescue_passes = original_rescue_passes
+
+    # Restore the dedicated final genre-pocket pass after other polishers.
+    best = program_genre_pockets(best, s)
 
     transitions = []
     for i in range(len(best) - 1):

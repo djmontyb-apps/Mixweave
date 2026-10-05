@@ -1,4 +1,4 @@
-# MixWeave 1.4.1
+# MixWeave 1.4.2
 
 **MixWeave** is a DJ playlist sequencing tool that turns a crate or playlist into a more performance-ready running order using BPM, Camelot key, Energy, artist spacing, genre-family information, and optional vibe metadata.
 
@@ -150,3 +150,18 @@ For playlists without saved genres, expand **Import Rekordbox genres** and uploa
 The original `Genre` column and mapped `Genre Family` are both displayed and exported. Recognized families use MixWeave's existing programming preferences. No changes to the optimizer are required.
 
 Validation: `python -m unittest test_audio_analysis.py test_genre_metadata.py`.
+
+
+## Restored genre pockets
+
+The dedicated genre-pocket pass from the archived MixWeave 1.2.1 implementation is restored and adapted to the current optimizer. A September 15, 2026 upload (commit cce87fc) had removed that pass while later versions retained only a lighter genre-run preference.
+
+**Genre pockets** in Programming Brain controls the final pass (Off, Light, Normal, Strong; default Normal). It favors sustained genre runs and fewer isolated tracks. **Genre Pocket** numbers identify contiguous classified runs in the optimized output; the caption reports 2–4 track pockets and isolated tracks. These numbers are generated for the new order each time.
+
+Genre rearrangement may accept a small bounded decrease in average harmonic/transition quality to improve programming. It cannot increase hard or severe BPM jumps, weak-link counts, energy cliffs, artist repeats, or low-energy Build/Peak violations relative to the route entering the pass. Worst effective BPM difference cannot increase; locked endpoints and every track are preserved. The existing BPM/key scoring and Essentia tie-breakers remain in place. Large-crate search is bounded.
+
+Classification still determines grouping: a song labeled Pop is treated as Pop, even if you would program it with hip-hop. Unclassified tracks remain unclassified. The pass can leave isolated tracks when the safeguards prevent moving them.
+
+Previously exported playlists can now be rebuilt without a duplicate running-order-column error. Your saved genre choices and audio features are retained.
+
+Validation: `python test_genre_pockets.py` and `python -m unittest test_pocket_restoration.py test_audio_analysis.py test_genre_metadata.py`.
