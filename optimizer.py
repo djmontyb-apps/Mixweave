@@ -1,7 +1,7 @@
 import math
 import random
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from genre_metadata import genre_family, GENRE_FAMILIES
 
@@ -1565,56 +1565,89 @@ def _opening_energy_penalty(order, s):
 
 
 def program_opening(order, s):
-    """Respect explicit DJ placement choices with at most one cut/fade reset.
+    """Honor explicit placements or fail clearly; never return an unmet choice.
 
-    Move contiguous blocks so the genre runs themselves remain intact. The
-    original BPM and transition scores are never rewritten to disguise a reset.
+    Evaluate whole-block moves and both directions of a deferred-song block.
+    Placement is mandatory; genre and energy are preferences among valid routes.
+    One cut/fade is permitted only when the DJ enabled it.
     """
-    best = list(order)
-    if not opening_later_count(best):
-        return best
-    floor = _route_program_stats(best, s)
-    limit = max(1, math.ceil(len(best) * 0.18))
-    start = 1 if s.lock_first else 0
-    end = len(best) - 1 if s.lock_last else len(best)
-    for _ in range(3):
-        best_count = opening_later_count(best)
-        if not best_count:
-            break
-        choice = None
-        choice_key = None
-        for stop in range(start + 1, end + 1):
-            block = best[start:stop]
-            if not any(t.get("Set Role") == "After warm-up" for t in block):
-                continue
-            remainder = best[:start] + best[stop:]
-            for dest in range(limit, len(remainder) + (0 if s.lock_last else 1)):
-                cand = remainder[:dest] + block + remainder[dest:]
-                count = opening_later_count(cand)
-                if count >= best_count:
-                    continue
-                st = _route_program_stats(cand, s)
-                # One planned reset maximum, including existing unsafe edges.
-                if st["hard"] > (1 if s.allow_opening_reset else floor["hard"]) or st["weak"] > floor["weak"] + (1 if s.allow_opening_reset else 0):
-                    continue
-                if st["genre_cost"] > floor["genre_cost"] + 1e-9:
-                    continue
-                if st["adjacent_artist"] > floor["adjacent_artist"] or st["near_artist"] > floor["near_artist"]:
-                    continue
-                key = (-count, -_opening_energy_penalty(cand, s), -st["hard"], -st["tempo_fallbacks"],
-                       -st["genre_cost"], -st["weak"], st["avg"], st["arc"])
-                if choice_key is None or key > choice_key:
-                    choice, choice_key = cand, key
-        if choice is None:
-            break
-        best = choice
+    original = list(order)
+    if not opening_later_count(original):
+        return original
+    floor = _route_program_stats(original, s)
+    limit = max(1, math.ceil(len(original) * 0.18))
+    lo = 1 if s.lock_first else 0
+    hi = len(original) - 1 if s.lock_last else len(original)
+    best = None
+    best_key = None
+    hard_limit = 1 if s.allow_opening_reset else floor['hard']
+
+    def consider(cand):
+        nonlocal best, best_key
+        if opening_later_count(cand):
+            return
+        if s.lock_first and cand[0] is not original[0]:
+            return
+        if s.lock_last and cand[-1] is not original[-1]:
+            return
+        stats = _route_program_stats(cand, s)
+        if stats['hard'] > hard_limit:
+            return
+        if stats['adjacent_artist'] > floor['adjacent_artist'] or stats['near_artist'] > floor['near_artist']:
+            return
+        key = (-stats['hard'], -stats['weak'], -stats['tempo_fallbacks'],
+               -stats['genre_cost'], -_opening_energy_penalty(cand, s), stats['avg'])
+        if best_key is None or key > best_key:
+            best, best_key = cand, key
+
+    # Preserve contiguous genre runs whenever a single block relocation works.
+    for stop in range(lo + 1, hi + 1):
+        block = original[lo:stop]
+        if not any(t.get('Set Role') == 'After warm-up' for t in block):
+            continue
+        remainder = original[:lo] + original[stop:]
+        for dest in range(limit, len(remainder) + (0 if s.lock_last else 1)):
+            consider(remainder[:dest] + block + remainder[dest:])
+
+    # The old pass could only move a prefix in its original direction. That
+    # missed practical routes when reversing the deferred block changes the
+    # connecting edge, or when separate held songs need to move together.
+    deferred = [t for t in original[lo:hi] if t.get('Set Role') == 'After warm-up']
+    remainder = original[:lo] + [t for t in original[lo:hi] if t.get('Set Role') != 'After warm-up'] + original[hi:]
+    for block in [deferred, list(reversed(deferred))]:
+        for dest in range(limit, len(remainder) + (0 if s.lock_last else 1)):
+            consider(remainder[:dest] + block + remainder[dest:])
+    if best is None:
+        hint = 'Enable one deliberate reset, choose a different opener, or revise the held songs.' if not s.allow_opening_reset else 'Choose a different opener or revise the held songs; no route met the one-reset limit.'
+        raise ValueError('Mixweave could not honor the after-warm-up choices within your mixing limits. ' + hint)
     return best
+
+
+def prepare_placements(tracks, s):
+    """Validate saved roles and pin the chosen opener inside the optimizer."""
+    rows = list(tracks)
+    openers = [i for i, t in enumerate(rows) if t.get('Set Role') == 'Opener']
+    if len(openers) > 1:
+        raise ValueError('Choose only one opening track.')
+    if openers:
+        index = openers[0]
+        if s.lock_last and index == len(rows) - 1 and len(rows) > 1:
+            raise ValueError('The same track cannot be both the opener and locked last.')
+        rows.insert(0, rows.pop(index))
+        s = replace(s, lock_first=True)
+    limit = max(1, math.ceil(len(rows) * 0.18))
+    if sum(t.get('Set Role') == 'After warm-up' for t in rows) > len(rows) - limit:
+        raise ValueError('Too many songs are saved for after warm-up. Leave enough songs for the opening section.')
+    if rows and s.lock_first and rows[0].get('Set Role') == 'After warm-up':
+        raise ValueError('The locked first track cannot also be saved for after warm-up.')
+    return rows, s
 
 
 def optimize(tracks, s: Settings):
     if not tracks:
         return [], []
 
+    tracks, s = prepare_placements(tracks, s)
     _TRANSITION_CACHE.clear()
     n = len(tracks)
     large_set = n >= 80

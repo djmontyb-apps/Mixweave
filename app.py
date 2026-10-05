@@ -19,7 +19,7 @@ from optimizer import (
 )
 
 
-st.set_page_config(page_title="Mixweave 1.4.3", page_icon="🎚️", layout="wide")
+st.set_page_config(page_title="Mixweave 1.4.4", page_icon="🎚️", layout="wide")
 
 st.markdown(
     """
@@ -158,7 +158,7 @@ def set_health(avg_score, weak, hard_bpm, max_bpm_diff, adjacent_artist, program
 
 
 with st.sidebar:
-    st.markdown("### 🎚️ Mixweave 1.4.3")
+    st.markdown("### 🎚️ Mixweave 1.4.4")
     st.caption("Whole-set DJ sequencing")
 
     mode = st.segmented_control("Preset", ["Smooth", "Balanced", "Harmonic"], default="Balanced")
@@ -392,7 +392,7 @@ with st.expander("Review or assign genre families", expanded=classified < len(df
     st.caption("Use your DJ judgment for crossover tracks. These Genre Family choices are passed into the Mixweave optimizer.")
 
 with st.expander("Plan the opening", expanded=False):
-    st.caption("Choose your opener and any songs to save until after the warm-up (the first 18% of the set).")
+    st.caption("Choose your opener and songs to save until after the warm-up (the first 18% of the set). These are required placements. If they cannot be met within your mixing limits, Mixweave will ask you to revise the choices instead of exporting an incorrect order.")
     track_options = list(range(len(df)))
     def track_label(index):
         if index is None:
@@ -416,8 +416,6 @@ with st.expander("Preview uploaded playlist", expanded=False):
 
 if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     records = df.to_dict(orient="records")
-    if opener is not None:
-        records.insert(0, records.pop(opener))
     settings = Settings(
         key_weight=key_pct / 100.0,
         bpm_weight=bpm_pct / 100.0,
@@ -444,8 +442,12 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
         lock_last=lock_last,
     )
 
-    with st.spinner("Mixweave is planning the whole set…"):
-        ordered, transitions = optimize(records, settings)
+    try:
+        with st.spinner("Mixweave is planning the whole set…"):
+            ordered, transitions = optimize(records, settings)
+    except ValueError as error:
+        st.error(str(error))
+        st.stop()
 
     out = pd.DataFrame(ordered).drop(columns=["Mixweave #"], errors="ignore").copy()
     out.insert(0, "Mixweave #", range(1, len(out) + 1))
@@ -563,7 +565,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d1.download_button(
         "Download CSV",
         csv_bytes,
-        file_name="Mixweave_v1.4.3_optimized_playlist.csv",
+        file_name="Mixweave_v1.4.4_optimized_playlist.csv",
         mime="text/csv",
         width="stretch",
     )
@@ -574,7 +576,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d2.download_button(
         "Download Excel",
         xbuf.getvalue(),
-        file_name="Mixweave_v1.4.3_optimized_playlist.xlsx",
+        file_name="Mixweave_v1.4.4_optimized_playlist.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",
     )

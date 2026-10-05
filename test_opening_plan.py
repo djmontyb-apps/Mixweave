@@ -22,10 +22,10 @@ class OpeningPlanTests(unittest.TestCase):
         self.assertEqual(sorted(id(t) for t in result),sorted(id(t) for t in original))
         self.assertLessEqual(opt.genre_pocket_stats(result)['cost'],opt.genre_pocket_stats(original)['cost'])
 
-    def test_reset_opt_out_preserves_tempo_safety(self):
+    def test_reset_opt_out_rejects_unmet_placements(self):
         original = rows();s=opt.Settings(lock_first=True)
-        result=opt.program_opening(original,s)
-        self.assertLessEqual(opt._route_program_stats(result,s)['hard'],opt._route_program_stats(original,s)['hard'])
+        with self.assertRaisesRegex(ValueError, 'could not honor'):
+            opt.program_opening(original,s)
 
     def test_no_roles_is_neutral(self):
         original=rows()
