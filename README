@@ -1,4 +1,4 @@
-# MixWeave 1.4.3
+# MixWeave 1.4.4
 
 Half/double-time matches are a last resort: routing prefers fewer 2:1 tempo bridges after protecting BPM guardrails and weak transitions. Greedy selection uses a normal-tempo link whenever it meets the transition target. Genre, energy, and vibe polish cannot add extra 2:1 bridges. Original track BPM values stay unchanged.
 
@@ -171,3 +171,7 @@ Validation: `python test_genre_pockets.py` and `python -m unittest test_pocket_r
 ### Opening choices
 
 Use **Plan the opening** to choose an opener and save particular songs until after the warm-up (first 18% of the set). These choices are stored in the exported Set Role column. The planner moves contiguous blocks and protects genre-pocket quality. If you enable **Allow one deliberate reset for the opening**, it may use at most one transition beyond the BPM guardrail, explicitly labeled **Deliberate reset** for a clean cut or fade. Its original score and BPM difference remain visible. An unresolved placement produces a warning; the planner does not silently claim that every request was met.
+
+## Required song placements
+
+An explicitly selected opener stays first. Songs marked “After warm-up” stay outside the first 18% of the set (the first ten tracks in a 54-track playlist). MixWeave checks alternate orders for held songs while considering BPM, key, and genre pockets. If it cannot honor those placements within the mixing limits, it reports an actionable error instead of exporting a playlist that ignores the choices. The optional deliberate reset permits at most one transition beyond the BPM guardrail.
