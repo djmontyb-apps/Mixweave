@@ -1,4 +1,4 @@
-# MixWeave 1.4.4
+# MixWeave 1.4.5
 
 Half/double-time matches are a last resort: routing prefers fewer 2:1 tempo bridges after protecting BPM guardrails and weak transitions. Greedy selection uses a normal-tempo link whenever it meets the transition target. Genre, energy, and vibe polish cannot add extra 2:1 bridges. Original track BPM values stay unchanged.
 
@@ -175,3 +175,9 @@ Use **Plan the opening** to choose an opener and save particular songs until aft
 ## Required song placements
 
 An explicitly selected opener stays first. Songs marked “After warm-up” stay outside the first 18% of the set (the first ten tracks in a 54-track playlist). MixWeave checks alternate orders for held songs while considering BPM, key, and genre pockets. If it cannot honor those placements within the mixing limits, it reports an actionable error instead of exporting a playlist that ignores the choices. The optional deliberate reset permits at most one transition beyond the BPM guardrail.
+
+## Optional two-song artist runs
+
+Select artists in “Two-song artist runs” to try a short, same-family pair. Only artists appearing exactly twice are offered. MixWeave preserves the opener, last-track lock, and after-warm-up choices, and checks the surrounding transitions before accepting a pair. Standard artist runs reject moves that worsen genre pockets or add half/double-time bridges. Unselected artists retain normal spacing, and three-song runs are not exempt. A pair is optional and may remain separated if no acceptable placement is found. With the one-reset option enabled, a selected pair can use the shared single clean-cut/fade allowance for a native BPM difference up to four BPM beyond the guardrail. Original scores and BPM values remain visible.
+
+Enable “Allow stems or cuts within artist runs” to plan a selected pair without requiring full-track BPM/key compatibility. This explicitly permits a vocal stem bridge or clean cut within the pair; outside transitions retain tempo checks. Genre and weak-link scores become preferences for this mode. Each such edge is labeled “Artist bridge”, retaining its original score and BPM difference. MixWeave recommends a technique and does not render stems or audio.

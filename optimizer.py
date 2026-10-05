@@ -20,6 +20,8 @@ class Settings:
     min_transition_target: float = 60.0
     energy_influence: float = 0.15
     artist_spacing: float = 0.08
+    artist_run_bridges: bool = False
+    artist_runs: tuple = ()  # Explicitly selected artists may have one two-song run.
     energy_mode: str = "Smooth"   # Smooth | Build (adjacent-track behavior)
     # Programming Brain: program the set in broad Energy Zones rather than
     # forcing a mathematically smooth curve. BPM safety always has veto power.
@@ -224,7 +226,7 @@ _TRANSITION_CACHE = {}
 def _settings_score_signature(s):
     return (
         s.key_weight, s.bpm_weight, s.bpm_tolerance, s.bpm_guardrail,
-        s.allow_half_double, s.energy_influence, s.artist_spacing, s.energy_mode,
+        s.allow_half_double, s.energy_influence, s.artist_spacing, s.energy_mode, tuple(s.artist_runs),
         getattr(s, "half_double_penalty", 0.10),
         getattr(s, "energy_cliff_threshold", 20.0),
         getattr(s, "energy_cliff_penalty", 0.22),
@@ -290,7 +292,7 @@ def _transition_score_uncached(a, b, s: Settings, force_escape=False):
     artist_a = str(a.get("Artist", "")).strip().lower()
     artist_b = str(b.get("Artist", "")).strip().lower()
     same_artist = bool(artist_a and artist_a == artist_b)
-    if same_artist:
+    if same_artist and not artist_run_pair(a, b, s):
         score -= s.artist_spacing
 
     score = max(0.0, min(1.0, score))
@@ -463,16 +465,31 @@ def energy_guardrail_stats(order, s):
     return {"peak_low": peak_low, "build_low": build_low}
 
 
-def artist_spacing_stats(order):
+def artist_run_pair(a, b, s):
+    artist = str(a.get("Artist", "")).strip().casefold()
+    family = track_genre_family(a)
+    return (artist in {str(x).strip().casefold() for x in s.artist_runs}
+            and artist == str(b.get("Artist", "")).strip().casefold()
+            and bool(family) and family == track_genre_family(b))
+
+
+def artist_spacing_stats(order, s=None):
     """Count artist collisions that matter to a live DJ set."""
     artists = [str(t.get("Artist", "")).strip().lower() for t in order]
     adjacent = 0
     near = 0
+    allowed_pairs = set()
     for i, artist in enumerate(artists):
         if not artist:
             continue
         if i + 1 < len(artists) and artists[i + 1] == artist:
-            adjacent += 1
+            if (s is not None and artist not in allowed_pairs
+                    and artist_run_pair(order[i], order[i + 1], s)
+                    and (i == 0 or artists[i - 1] != artist)
+                    and (i + 2 == len(artists) or artists[i + 2] != artist)):
+                allowed_pairs.add(artist)
+            else:
+                adjacent += 1
         if i + 2 < len(artists) and artists[i + 2] == artist:
             near += 1
     return adjacent, near
@@ -645,7 +662,7 @@ def objective(order, s):
     # reinterpretations -> energy cliffs -> adjacent artist
     # collisions -> near artist repeats -> transition pain -> programming zones.
     # This makes artist separation a real DJ rule while never outranking BPM safety.
-    adjacent_artist, near_artist = artist_spacing_stats(order)
+    adjacent_artist, near_artist = artist_spacing_stats(order, s)
     genre_singletons, genre_same_links = genre_run_stats(order)
     pocket_cost = genre_pocket_stats(order)["cost"] if s.genre_pockets else 0.0
     arc = energy_zone_score(order, s)
@@ -1102,8 +1119,8 @@ def _route_program_stats(order, s):
         "minimum": min(scores) if scores else 100.0,
         "arc": energy_zone_score(order, s) * 100.0,
         "vibe": vibe_program_score(order, s) * 100.0,
-        "adjacent_artist": artist_spacing_stats(order)[0],
-        "near_artist": artist_spacing_stats(order)[1],
+        "adjacent_artist": artist_spacing_stats(order, s)[0],
+        "near_artist": artist_spacing_stats(order, s)[1],
         "peak_low": energy_guardrail_stats(order, s)["peak_low"],
         "build_low": energy_guardrail_stats(order, s)["build_low"],
     }
@@ -1623,6 +1640,92 @@ def program_opening(order, s):
     return best
 
 
+def repair_artist_run_gaps(order, s):
+    """Repair holes left by a pair without disguising tempo jumps as escapes."""
+    best = list(order)
+    def rank(route):
+        st = _route_program_stats(route, s)
+        return (-st['severe'], -st['hard'], -st['weak'], -st['tempo_fallbacks'],
+                -st['genre_cost'], -st['adjacent_artist'], -st['near_artist'], st['avg'])
+    for _ in range(3):
+        current = rank(best)
+        endpoints = set()
+        for i, (a, b) in enumerate(zip(best, best[1:])):
+            _, d = transition_score(a, b, s)
+            if d.get('bpm_diff') is not None and d['bpm_diff'] > s.bpm_guardrail:
+                endpoints.update((i, i + 1))
+        if not endpoints:
+            break
+        choice = best
+        choice_key = current
+        for src in sorted(endpoints):
+            if (s.lock_first and src == 0) or (s.lock_last and src == len(best) - 1):
+                continue
+            rest = best[:src] + best[src + 1:]
+            for dest in range(1 if s.lock_first else 0, len(rest) + (0 if s.lock_last else 1)):
+                cand = rest[:dest] + [best[src]] + rest[dest:]
+                key = rank(cand)
+                if key > choice_key:
+                    choice, choice_key = cand, key
+        if choice_key <= current:
+            break
+        best = choice
+    return best
+
+
+def program_artist_runs(order, s):
+    """Try one native-tempo, same-family pair per explicitly chosen artist."""
+    best = list(order)
+    for artist in sorted({str(x).strip().casefold() for x in s.artist_runs}):
+        members = [t for t in best if str(t.get('Artist', '')).strip().casefold() == artist]
+        if len(members) != 2 or not artist_run_pair(*members, s):
+            continue
+        base = _route_program_stats(best, s)
+        choice = None
+        choice_key = None
+        remainder = [t for t in best if all(t is not x for x in members)]
+        remainders = [remainder]
+        # Removing a bridge song can expose a tempo gap. Repair that gap before
+        # evaluating the pair, instead of demanding a safe route from a broken
+        # remainder. The final full-route checks still apply.
+        if _route_program_stats(remainder, s)['hard'] > base['hard']:
+            repaired = repair_artist_run_gaps(remainder, s)
+            remainders.append(repaired)
+        for remainder in remainders:
+            for block in [members, list(reversed(members))]:
+                _, edge = transition_score(*block, s)
+                bridge = s.artist_run_bridges
+                reset = bool(s.allow_opening_reset and edge.get('bpm_diff') is not None
+                             and s.bpm_guardrail < edge['bpm_diff'] <= s.bpm_guardrail + 4)
+                if not bridge and (edge.get('tempo_mode') != 'Normal' or edge.get('bpm_diff') is None):
+                    continue
+                if not bridge and not reset and (edge['bpm_diff'] > s.bpm_guardrail or edge['score'] * 100 < s.min_transition_target):
+                    continue
+                for dest in range(len(remainder) + 1):
+                    cand = remainder[:dest] + block + remainder[dest:]
+                    if (s.lock_first and cand[0] is not best[0]) or (s.lock_last and cand[-1] is not best[-1]) or opening_later_count(cand):
+                        continue
+                    stats = _route_program_stats(cand, s)
+                    pair_hard = int(edge.get('bpm_diff') is not None and edge['bpm_diff'] > s.bpm_guardrail)
+                    pair_severe = int(edge.get('bpm_diff') is not None and edge['bpm_diff'] > s.bpm_guardrail + 4)
+                    if bridge:
+                        if stats['hard'] - pair_hard > base['hard'] or stats['severe'] - pair_severe > base['severe']:
+                            continue
+                        checks = ['tempo_fallbacks', 'adjacent_artist', 'near_artist']
+                    else:
+                        if stats['hard'] > (1 if reset else base['hard']) or stats['weak'] > base['weak'] + int(reset):
+                            continue
+                        checks = ['severe', 'tempo_fallbacks', 'adjacent_artist', 'near_artist', 'genre_cost']
+                    if any(stats[k] > base[k] for k in checks):
+                        continue
+                    key = (-stats['weak'], -stats['genre_cost'], stats['avg'])
+                    if choice_key is None or key > choice_key:
+                        choice, choice_key = cand, key
+        if choice is not None:
+            best = choice
+    return best
+
+
 def prepare_placements(tracks, s):
     """Validate saved roles and pin the chosen opener inside the optimizer."""
     rows = list(tracks)
@@ -1723,15 +1826,21 @@ def optimize(tracks, s: Settings):
     before_opening = best
     best = program_opening(best, s)
     opening_changed = any(a is not b for a, b in zip(before_opening, best))
+    before_artist_runs = best
+    best = program_artist_runs(best, s)
+    opening_changed = opening_changed or any(a is not b for a, b in zip(before_artist_runs, best))
 
     transitions = []
     for i in range(len(best) - 1):
         _, detail = transition_score(best[i], best[i + 1], s)
         transitions.append(detail)
     transitions = _mark_escape_reasons(best, transitions, s)
-    for detail in transitions:
+    for index, detail in enumerate(transitions):
         detail["quality"] = transition_quality(detail, s)
         if s.allow_opening_reset and opening_changed and detail.get("bpm_diff") is not None and detail["bpm_diff"] > s.bpm_guardrail:
             detail["quality"] = "Deliberate reset"
             detail["reason"] = "Deliberate reset — use a clean cut or fade; " + detail["reason"]
+        if s.artist_run_bridges and artist_run_pair(best[index], best[index + 1], s):
+            detail["quality"] = "Artist bridge"
+            detail["reason"] = "Artist mini-set — use stems or a clean cut; " + detail["reason"]
     return best, transitions
