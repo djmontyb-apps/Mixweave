@@ -613,6 +613,7 @@ def objective(order, s):
     weak = 0
     energy_cliffs = 0
     pain = 0.0
+    tempo_fallbacks = 0
     for i in range(len(order) - 1):
         sc, d = transition_score(order[i], order[i + 1], s)
         pct = sc * 100
@@ -633,10 +634,12 @@ def objective(order, s):
             energy_cliffs += 1
             pain += max(0.0, s.min_transition_target - pct) ** 2 / 25.0
             pain += max(0.0, float(d.get("energy_drop", 0.0)) - s.energy_cliff_threshold) * 0.35
-        if d.get("tempo_mode") != "Normal":
+        if d.get("tempo_mode") not in ("Normal", "Unknown BPM"):
+            tempo_fallbacks += 1
             pain += 0.35
     # Whole-set lexicographic priority:
-    # catastrophic cliffs -> guardrail violations -> weak links -> adjacent artist
+    # catastrophic cliffs -> guardrail violations -> weak links -> fewer tempo
+    # reinterpretations -> energy cliffs -> adjacent artist
     # collisions -> near artist repeats -> transition pain -> programming zones.
     # This makes artist separation a real DJ rule while never outranking BPM safety.
     adjacent_artist, near_artist = artist_spacing_stats(order)
@@ -650,7 +653,7 @@ def objective(order, s):
     # Danceability/Valence are handled later as tie-breakers among routes that
     # are already effectively equivalent on BPM safety, weak links, artist
     # spacing, transition quality, and Energy Zones.
-    return (-severe, -hard, -weak, -energy_cliffs, -adjacent_artist, -near_artist, -genre_singletons, -pain, programmed, min(scores), sum(scores))
+    return (-severe, -hard, -weak, -tempo_fallbacks, -energy_cliffs, -adjacent_artist, -near_artist, -genre_singletons, -pain, programmed, min(scores), sum(scores))
 
 def _connectivity(tracks, idx, s):
     """How many tempo-practical neighbors does this track have? Lower = orphan."""
@@ -676,9 +679,13 @@ def _choose_next(cur_idx, remaining, tracks, s, connectivity):
         normal.append((j, sc, d))
 
     safe = [x for x in normal if x[2]["bpm_diff"] is None or x[2]["bpm_diff"] <= s.bpm_guardrail]
-    harmonic_safe = [x for x in safe if x[2]["key_score"] >= 70]
+    # Use a workable native-tempo link before considering a 2:1 bridge.
+    native = [x for x in safe if x[2]["tempo_mode"] == "Normal"
+              and x[1] * 100 >= s.min_transition_target]
+    preferred = native or safe
+    harmonic_safe = [x for x in preferred if x[2]["key_score"] >= 70]
 
-    pool = harmonic_safe or safe
+    pool = harmonic_safe or preferred
     escape = False
     if not pool:
         pool = normal
@@ -1064,11 +1071,13 @@ def rescue_weak_links(order, s):
 
 
 def _route_program_stats(order, s):
-    severe = hard = weak = energy_cliffs = 0
+    severe = hard = weak = energy_cliffs = tempo_fallbacks = 0
     scores = []
     for i in range(len(order)-1):
         sc, d = transition_score(order[i], order[i+1], s)
         pct = sc * 100.0
+        if d.get("tempo_mode") not in ("Normal", "Unknown BPM"):
+            tempo_fallbacks += 1
         scores.append(pct)
         diff = d.get("bpm_diff")
         if diff is not None and diff > s.bpm_guardrail:
@@ -1082,6 +1091,7 @@ def _route_program_stats(order, s):
     genre_singletons, genre_same_links = genre_run_stats(order)
     return {
         "severe": severe, "hard": hard, "weak": weak, "energy_cliffs": energy_cliffs,
+        "tempo_fallbacks": tempo_fallbacks,
         "genre_singletons": genre_singletons, "genre_same_links": genre_same_links,
         "avg": sum(scores)/max(len(scores),1),
         "minimum": min(scores) if scores else 100.0,
@@ -1122,7 +1132,7 @@ def program_energy_arc(order, s):
                 cand = list(best)
                 cand[i], cand[j] = cand[j], cand[i]
                 st = _route_program_stats(cand, s)
-                if (st["severe"], st["hard"], st["weak"], st["energy_cliffs"]) != (base["severe"], base["hard"], base["weak"], base["energy_cliffs"]):
+                if st["tempo_fallbacks"] > base["tempo_fallbacks"] or (st["severe"], st["hard"], st["weak"], st["energy_cliffs"]) != (base["severe"], base["hard"], base["weak"], base["energy_cliffs"]):
                     continue
                 if st["adjacent_artist"] > base["adjacent_artist"] or st["near_artist"] > base["near_artist"]:
                     continue
@@ -1144,7 +1154,7 @@ def program_energy_arc(order, s):
                 dest = j if j < i else j - 1
                 cand.insert(max(lo, min(dest, len(cand))), tr)
                 st = _route_program_stats(cand, s)
-                if (st["severe"], st["hard"], st["weak"], st["energy_cliffs"]) != (base["severe"], base["hard"], base["weak"], base["energy_cliffs"]):
+                if st["tempo_fallbacks"] > base["tempo_fallbacks"] or (st["severe"], st["hard"], st["weak"], st["energy_cliffs"]) != (base["severe"], base["hard"], base["weak"], base["energy_cliffs"]):
                     continue
                 if st["adjacent_artist"] > base["adjacent_artist"] or st["near_artist"] > base["near_artist"]:
                     continue
@@ -1197,7 +1207,7 @@ def rescue_artist_spacing(order, s):
 
         for cand in candidates:
             st = _route_program_stats(cand, s)
-            if st["severe"] > base["severe"] or st["hard"] > base["hard"] or st["weak"] > base["weak"] or st["energy_cliffs"] > base["energy_cliffs"]:
+            if st["tempo_fallbacks"] > base["tempo_fallbacks"] or st["severe"] > base["severe"] or st["hard"] > base["hard"] or st["weak"] > base["weak"] or st["energy_cliffs"] > base["energy_cliffs"]:
                 continue
             # If we remove an adjacent collision, permit a modest quality spend
             # and do not require near-repeat count to improve simultaneously.
@@ -1244,7 +1254,7 @@ def enforce_energy_zone_guardrails(order, s):
                 cand = list(best)
                 cand[i], cand[j] = cand[j], cand[i]
                 st = _route_program_stats(cand, s)
-                if st["severe"] > base["severe"] or st["hard"] > base["hard"] or st["weak"] > base["weak"] or st["energy_cliffs"] > base["energy_cliffs"]:
+                if st["tempo_fallbacks"] > base["tempo_fallbacks"] or st["severe"] > base["severe"] or st["hard"] > base["hard"] or st["weak"] > base["weak"] or st["energy_cliffs"] > base["energy_cliffs"]:
                     continue
                 if st["adjacent_artist"] > base["adjacent_artist"]:
                     continue
@@ -1286,7 +1296,7 @@ def polish_vibe_tiebreak(order, s):
     hi = len(best) - 1 if s.lock_last else len(best)
 
     def eligible(st):
-        if (st["severe"], st["hard"], st["weak"], st["energy_cliffs"]) != (base["severe"], base["hard"], base["weak"], base["energy_cliffs"]):
+        if st["tempo_fallbacks"] > base["tempo_fallbacks"] or (st["severe"], st["hard"], st["weak"], st["energy_cliffs"]) != (base["severe"], base["hard"], base["weak"], base["energy_cliffs"]):
             return False
         if (st["adjacent_artist"], st["near_artist"]) != (base["adjacent_artist"], base["near_artist"]):
             return False
@@ -1361,7 +1371,7 @@ def polish_weak_transitions(order, s):
     hi = len(best) - 1 if s.lock_last else len(best)
 
     def eligible(st):
-        if st["severe"] > base["severe"] or st["hard"] > base["hard"]:
+        if st["tempo_fallbacks"] > base["tempo_fallbacks"] or st["severe"] > base["severe"] or st["hard"] > base["hard"]:
             return False
         if st["adjacent_artist"] > base["adjacent_artist"] or st["near_artist"] > base["near_artist"]:
             return False
@@ -1510,7 +1520,7 @@ def program_genre_pockets(order, s):
         choice = None
         for cost, _, _, cand in options[:240]:
             stats = _route_program_stats(cand, s)
-            protected = ("severe", "hard", "weak", "adjacent_artist", "near_artist",
+            protected = ("tempo_fallbacks", "severe", "hard", "weak", "adjacent_artist", "near_artist",
                          "peak_low", "build_low", "energy_cliffs")
             if any(stats[k] > floor[k] for k in protected):
                 continue

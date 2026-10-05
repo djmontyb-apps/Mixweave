@@ -1,4 +1,6 @@
-# MixWeave 1.4.2
+# MixWeave 1.4.3
+
+Half/double-time matches are a last resort: routing prefers fewer 2:1 tempo bridges after protecting BPM guardrails and weak transitions. Greedy selection uses a normal-tempo link whenever it meets the transition target. Genre, energy, and vibe polish cannot add extra 2:1 bridges. Original track BPM values stay unchanged.
 
 **MixWeave** is a DJ playlist sequencing tool that turns a crate or playlist into a more performance-ready running order using BPM, Camelot key, Energy, artist spacing, genre-family information, and optional vibe metadata.
 
