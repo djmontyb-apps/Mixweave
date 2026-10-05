@@ -5,6 +5,7 @@ import pandas as pd
 import pdfplumber
 import streamlit as st
 from audio_analysis import attach_features
+from reference_tools import load_reference, select_tracks, playlist_csv
 from genre_metadata import GENRE_FAMILIES, RekordboxGenres, genre_family
 from optimizer import (
     Settings,
@@ -19,7 +20,7 @@ from optimizer import (
 )
 
 
-st.set_page_config(page_title="Mixweave 1.4.3", page_icon="🎚️", layout="wide")
+st.set_page_config(page_title="Mixweave 1.4.4", page_icon="🎚️", layout="wide")
 
 st.markdown(
     """
@@ -158,7 +159,7 @@ def set_health(avg_score, weak, hard_bpm, max_bpm_diff, adjacent_artist, program
 
 
 with st.sidebar:
-    st.markdown("### 🎚️ Mixweave 1.4.3")
+    st.markdown("### 🎚️ Mixweave 1.4.4")
     st.caption("Whole-set DJ sequencing")
 
     mode = st.segmented_control("Preset", ["Smooth", "Balanced", "Harmonic"], default="Balanced")
@@ -264,6 +265,43 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown('</div>', unsafe_allow_html=True)
+
+with st.expander("Find songs from your private reference", expanded=False):
+    st.caption("Upload your private reference file to browse event categories and available recordings. Choose the actual edits you want; chart rank is a request ranking, not the running order.")
+    ref_upload = st.file_uploader("Private reference file", type=["json"], key="private_reference")
+    if ref_upload:
+        try:
+            reference = load_reference(ref_upload.getvalue())
+            ref_key = hashlib.sha256(ref_upload.getvalue()).hexdigest()
+            chart_index = st.selectbox("Reference category", range(len(reference['charts'])),
+                                      format_func=lambda i: reference['charts'][i]['name'], key=f"reference_category_{ref_key}")
+            songs = reference['charts'][chart_index]['songs']
+            available = [i for i, song in enumerate(songs) if any(not reference['library'][k].get('Metadata Review') for k in song['candidate_ids'])]
+            st.caption(f"{len(available)} of {len(songs)} reference songs have library candidates ready to review. Snapshot: {reference.get('snapshot_date', 'unknown')}.")
+            chosen = st.multiselect("Songs to consider", available,
+                                    format_func=lambda i: f"#{songs[i]['rank']} {songs[i]['title']} — {songs[i]['artist']}",
+                                    key=f"reference_songs_{ref_key}_{chart_index}")
+            selections = []
+            for i in chosen:
+                song = songs[i]
+                candidate_ids = [k for k in song['candidate_ids'] if not reference['library'][k].get('Metadata Review')]
+                def recording_label(k):
+                    if k is None:
+                        return "Choose a recording"
+                    row = reference['library'][k]
+                    return f"{row['Title']} — {row['Artist']} | BPM {row['BPM']} | {row['File'].rsplit('/', 1)[-1]}"
+                selected = st.selectbox(f"Recording for {song['title']}", [None] + candidate_ids,
+                                        format_func=recording_label, key=f"reference_recording_{ref_key}_{chart_index}_{i}")
+                if selected is not None:
+                    selections.append((i, selected))
+            if selections:
+                selected_tracks = select_tracks(reference, chart_index, selections)
+                st.dataframe(pd.DataFrame(selected_tracks)[['Title','Artist','BPM','Camelot Key','Energy']], hide_index=True)
+                st.download_button("Download selected songs for Mixweave", playlist_csv(selected_tracks),
+                                   file_name="Mixweave_reference_selections.csv", mime="text/csv")
+                st.caption("Upload this CSV below to build a set. You can also combine it with another playlist. Library music values are retained; missing values stay blank. Conflicting Rekordbox records are excluded until reviewed.")
+        except (ValueError, KeyError, TypeError) as error:
+            st.error(str(error))
 
 uploaded = st.file_uploader("Upload a playlist", type=["pdf", "xlsx", "xls", "csv"])
 st.caption("Required: Title, Artist, BPM, Camelot Key, Energy  •  Optional: Danceability, Valence, Acousticness, Loudness LUFS, Popularity")
@@ -563,7 +601,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d1.download_button(
         "Download CSV",
         csv_bytes,
-        file_name="Mixweave_v1.4.3_optimized_playlist.csv",
+        file_name="Mixweave_v1.4.4_optimized_playlist.csv",
         mime="text/csv",
         width="stretch",
     )
@@ -574,7 +612,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d2.download_button(
         "Download Excel",
         xbuf.getvalue(),
-        file_name="Mixweave_v1.4.3_optimized_playlist.xlsx",
+        file_name="Mixweave_v1.4.4_optimized_playlist.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",
     )
