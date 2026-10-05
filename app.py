@@ -15,10 +15,11 @@ from optimizer import (
     vibe_program_details,
     genre_pocket_stats,
     track_genre_family,
+    opening_later_count,
 )
 
 
-st.set_page_config(page_title="Mixweave 1.4.2", page_icon="🎚️", layout="wide")
+st.set_page_config(page_title="Mixweave 1.4.3", page_icon="🎚️", layout="wide")
 
 st.markdown(
     """
@@ -157,7 +158,7 @@ def set_health(avg_score, weak, hard_bpm, max_bpm_diff, adjacent_artist, program
 
 
 with st.sidebar:
-    st.markdown("### 🎚️ Mixweave 1.4.2")
+    st.markdown("### 🎚️ Mixweave 1.4.3")
     st.caption("Whole-set DJ sequencing")
 
     mode = st.segmented_control("Preset", ["Smooth", "Balanced", "Harmonic"], default="Balanced")
@@ -191,7 +192,7 @@ with st.sidebar:
     )
 
     with st.expander("Mixing safety", expanded=False):
-        half_double = st.checkbox("Allow half / double tempo matches", value=True)
+        half_double = st.checkbox("Allow half / double tempo as a last resort", value=True)
         escape_mode = st.checkbox(
             "BPM Escape Mode",
             value=True,
@@ -390,11 +391,33 @@ with st.expander("Review or assign genre families", expanded=classified < len(df
     df["Genre Family"] = genre_editor["Genre Family"].fillna("")
     st.caption("Use your DJ judgment for crossover tracks. These Genre Family choices are passed into the Mixweave optimizer.")
 
+with st.expander("Plan the opening", expanded=False):
+    st.caption("Choose your opener and any songs to save until after the warm-up (the first 18% of the set).")
+    track_options = list(range(len(df)))
+    def track_label(index):
+        if index is None:
+            return "Let Mixweave choose"
+        row = df.iloc[index]
+        return f"{index + 1}. {row['Title']} — {row['Artist']}"
+    saved_opener = next((i for i, value in enumerate(df.get("Set Role", [])) if value == "Opener"), None)
+    opener = st.selectbox("Opening track", [None] + track_options, format_func=track_label,
+                          index=0 if saved_opener is None else saved_opener + 1)
+    deferred = st.multiselect("Save until after warm-up", track_options,
+                             format_func=track_label,
+                             default=[i for i, value in enumerate(df.get("Set Role", [])) if value == "After warm-up"])
+    opening_reset = st.checkbox("Allow one deliberate reset for the opening", value=False,
+                               help="A clean cut or fade may be needed. Any reset is labeled in the result; BPM and transition scores stay unchanged.")
+    if opener in deferred:
+        st.warning("The opener cannot also be saved for later. Its opener choice takes priority.")
+    df["Set Role"] = ["Opener" if i == opener else ("After warm-up" if i in deferred else "Automatic") for i in track_options]
+
 with st.expander("Preview uploaded playlist", expanded=False):
     st.dataframe(df, width="stretch", hide_index=True)
 
 if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     records = df.to_dict(orient="records")
+    if opener is not None:
+        records.insert(0, records.pop(opener))
     settings = Settings(
         key_weight=key_pct / 100.0,
         bpm_weight=bpm_pct / 100.0,
@@ -416,7 +439,8 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
         danceability_influence=danceability_influence,
         valence_influence=valence_influence,
         depth=depth,
-        lock_first=lock_first,
+        lock_first=lock_first or opener is not None,
+        allow_opening_reset=opening_reset,
         lock_last=lock_last,
     )
 
@@ -456,6 +480,11 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     out["Genre Pocket"] = pocket_labels
     st.caption(f"Genre pockets (2–4 tracks): {genre_before['pockets']} → {genre_after['pockets']} • Isolated genre tracks: {genre_before['islands']} → {genre_after['islands']}")
     st.success("Mixweave complete.")
+    if opening_later_count(ordered):
+        st.warning("Some songs saved for later remain in the warm-up. The planner could not move them within the tempo-reset and genre limits; review the opening.")
+    resets = sum(t["quality"] == "Deliberate reset" for t in transitions)
+    if resets:
+        st.info("One deliberate reset is marked below. Use a clean cut or fade at that transition.")
     st.markdown(
         f'<div class="sf-health"><div class="sf-health-title">Set Health: {health}</div><div class="sf-muted">{health_note}</div></div>',
         unsafe_allow_html=True,
@@ -495,7 +524,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
 
     st.subheader("Optimized running order")
     show_cols = ["Mixweave #", "Title", "Artist", "BPM", "Camelot Key", "Energy"]
-    for col in ["Genre", "Genre Family", "Genre Pocket", "Danceability", "Valence", "Acousticness", "Loudness LUFS"]:
+    for col in ["Set Role", "Genre", "Genre Family", "Genre Pocket", "Danceability", "Valence", "Acousticness", "Loudness LUFS"]:
         if col in out.columns:
             show_cols.append(col)
     show_cols += ["Program Zone", "Transition Score", "Transition Quality", "Transition Reason", "Effective BPM Δ"]
@@ -534,7 +563,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d1.download_button(
         "Download CSV",
         csv_bytes,
-        file_name="Mixweave_v1.4.2_optimized_playlist.csv",
+        file_name="Mixweave_v1.4.3_optimized_playlist.csv",
         mime="text/csv",
         width="stretch",
     )
@@ -545,7 +574,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d2.download_button(
         "Download Excel",
         xbuf.getvalue(),
-        file_name="Mixweave_v1.4.2_optimized_playlist.xlsx",
+        file_name="Mixweave_v1.4.3_optimized_playlist.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",
     )
