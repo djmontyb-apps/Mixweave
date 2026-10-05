@@ -167,3 +167,7 @@ Classification still determines grouping: a song labeled Pop is treated as Pop, 
 Previously exported playlists can now be rebuilt without a duplicate running-order-column error. Your saved genre choices and audio features are retained.
 
 Validation: `python test_genre_pockets.py` and `python -m unittest test_pocket_restoration.py test_audio_analysis.py test_genre_metadata.py`.
+
+### Opening choices
+
+Use **Plan the opening** to choose an opener and save particular songs until after the warm-up (first 18% of the set). These choices are stored in the exported Set Role column. The planner moves contiguous blocks and protects genre-pocket quality. If you enable **Allow one deliberate reset for the opening**, it may use at most one transition beyond the BPM guardrail, explicitly labeled **Deliberate reset** for a clean cut or fade. Its original score and BPM difference remain visible. An unresolved placement produces a warning; the planner does not silently claim that every request was met.

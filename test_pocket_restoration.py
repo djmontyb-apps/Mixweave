@@ -29,6 +29,19 @@ class PocketRestorationTests(unittest.TestCase):
             self.assertLessEqual(after[key],before[key],key)
         self.assertLessEqual(opt.genre_pocket_stats(result)['cost'],opt.genre_pocket_stats(rows)['cost'])
 
+    def test_energy_and_vibe_passes_preserve_genre_runs(self):
+        rows = tracks(12)
+        rows.sort(key=lambda row: row['Genre Family'])
+        for i, row in enumerate(rows):
+            row['Energy'] = [90, 40, 80, 50][i % 4]
+        s = opt.Settings(depth='Quick')
+        for polish in [opt.program_energy_arc, opt.enforce_energy_zone_guardrails,
+                       opt.polish_vibe_tiebreak]:
+            with self.subTest(polish=polish.__name__):
+                result = polish(rows, s)
+                self.assertLessEqual(opt.genre_pocket_stats(result)['cost'],
+                                     opt.genre_pocket_stats(rows)['cost'])
+
     def test_optimize_invokes_final_pocket_pass(self):
         from unittest.mock import patch
         real=opt.program_genre_pockets

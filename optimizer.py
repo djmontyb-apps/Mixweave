@@ -51,6 +51,7 @@ class Settings:
     genre_run_influence: float = 0.035
     genre_pockets: bool = True
     genre_pocket_influence: float = 0.20
+    allow_opening_reset: bool = False
 
 
 def parse_camelot(value):
@@ -236,7 +237,9 @@ def transition_score(a, b, s: Settings, force_escape=False):
     if cached is not None:
         return cached[0], dict(cached[1])
     result = _transition_score_uncached(a, b, s, force_escape)
-    _TRANSITION_CACHE[key] = (result[0], dict(result[1]))
+    # Keep source tracks alive until this route cache is cleared, so Python
+    # cannot reuse their IDs for unrelated tracks in a later scoring call.
+    _TRANSITION_CACHE[key] = (result[0], dict(result[1]), a, b)
     return result[0], dict(result[1])
 
 def _transition_score_uncached(a, b, s: Settings, force_escape=False):
@@ -644,6 +647,7 @@ def objective(order, s):
     # This makes artist separation a real DJ rule while never outranking BPM safety.
     adjacent_artist, near_artist = artist_spacing_stats(order)
     genre_singletons, genre_same_links = genre_run_stats(order)
+    pocket_cost = genre_pocket_stats(order)["cost"] if s.genre_pockets else 0.0
     arc = energy_zone_score(order, s)
     arc_weight = max(0.0, min(1.0, getattr(s, "energy_arc_influence", 0.25)))
     # Keep the arc term bounded so it refines rather than overwhelms mixing quality.
@@ -653,7 +657,7 @@ def objective(order, s):
     # Danceability/Valence are handled later as tie-breakers among routes that
     # are already effectively equivalent on BPM safety, weak links, artist
     # spacing, transition quality, and Energy Zones.
-    return (-severe, -hard, -weak, -tempo_fallbacks, -energy_cliffs, -adjacent_artist, -near_artist, -genre_singletons, -pain, programmed, min(scores), sum(scores))
+    return (-severe, -hard, -weak, -tempo_fallbacks, -energy_cliffs, -adjacent_artist, -near_artist, -pocket_cost, -genre_singletons, -pain, programmed, min(scores), sum(scores))
 
 def _connectivity(tracks, idx, s):
     """How many tempo-practical neighbors does this track have? Lower = orphan."""
@@ -1091,6 +1095,7 @@ def _route_program_stats(order, s):
     genre_singletons, genre_same_links = genre_run_stats(order)
     return {
         "severe": severe, "hard": hard, "weak": weak, "energy_cliffs": energy_cliffs,
+        "genre_cost": genre_pocket_stats(order)["cost"] if s.genre_pockets else 0.0,
         "tempo_fallbacks": tempo_fallbacks,
         "genre_singletons": genre_singletons, "genre_same_links": genre_same_links,
         "avg": sum(scores)/max(len(scores),1),
@@ -1132,7 +1137,7 @@ def program_energy_arc(order, s):
                 cand = list(best)
                 cand[i], cand[j] = cand[j], cand[i]
                 st = _route_program_stats(cand, s)
-                if st["tempo_fallbacks"] > base["tempo_fallbacks"] or (st["severe"], st["hard"], st["weak"], st["energy_cliffs"]) != (base["severe"], base["hard"], base["weak"], base["energy_cliffs"]):
+                if st["genre_cost"] > base["genre_cost"] + 1e-9 or st["tempo_fallbacks"] > base["tempo_fallbacks"] or (st["severe"], st["hard"], st["weak"], st["energy_cliffs"]) != (base["severe"], base["hard"], base["weak"], base["energy_cliffs"]):
                     continue
                 if st["adjacent_artist"] > base["adjacent_artist"] or st["near_artist"] > base["near_artist"]:
                     continue
@@ -1154,7 +1159,7 @@ def program_energy_arc(order, s):
                 dest = j if j < i else j - 1
                 cand.insert(max(lo, min(dest, len(cand))), tr)
                 st = _route_program_stats(cand, s)
-                if st["tempo_fallbacks"] > base["tempo_fallbacks"] or (st["severe"], st["hard"], st["weak"], st["energy_cliffs"]) != (base["severe"], base["hard"], base["weak"], base["energy_cliffs"]):
+                if st["genre_cost"] > base["genre_cost"] + 1e-9 or st["tempo_fallbacks"] > base["tempo_fallbacks"] or (st["severe"], st["hard"], st["weak"], st["energy_cliffs"]) != (base["severe"], base["hard"], base["weak"], base["energy_cliffs"]):
                     continue
                 if st["adjacent_artist"] > base["adjacent_artist"] or st["near_artist"] > base["near_artist"]:
                     continue
@@ -1207,7 +1212,7 @@ def rescue_artist_spacing(order, s):
 
         for cand in candidates:
             st = _route_program_stats(cand, s)
-            if st["tempo_fallbacks"] > base["tempo_fallbacks"] or st["severe"] > base["severe"] or st["hard"] > base["hard"] or st["weak"] > base["weak"] or st["energy_cliffs"] > base["energy_cliffs"]:
+            if st["genre_cost"] > base["genre_cost"] + 1e-9 or st["tempo_fallbacks"] > base["tempo_fallbacks"] or st["severe"] > base["severe"] or st["hard"] > base["hard"] or st["weak"] > base["weak"] or st["energy_cliffs"] > base["energy_cliffs"]:
                 continue
             # If we remove an adjacent collision, permit a modest quality spend
             # and do not require near-repeat count to improve simultaneously.
@@ -1254,7 +1259,7 @@ def enforce_energy_zone_guardrails(order, s):
                 cand = list(best)
                 cand[i], cand[j] = cand[j], cand[i]
                 st = _route_program_stats(cand, s)
-                if st["tempo_fallbacks"] > base["tempo_fallbacks"] or st["severe"] > base["severe"] or st["hard"] > base["hard"] or st["weak"] > base["weak"] or st["energy_cliffs"] > base["energy_cliffs"]:
+                if st["genre_cost"] > base["genre_cost"] + 1e-9 or st["tempo_fallbacks"] > base["tempo_fallbacks"] or st["severe"] > base["severe"] or st["hard"] > base["hard"] or st["weak"] > base["weak"] or st["energy_cliffs"] > base["energy_cliffs"]:
                     continue
                 if st["adjacent_artist"] > base["adjacent_artist"]:
                     continue
@@ -1296,7 +1301,7 @@ def polish_vibe_tiebreak(order, s):
     hi = len(best) - 1 if s.lock_last else len(best)
 
     def eligible(st):
-        if st["tempo_fallbacks"] > base["tempo_fallbacks"] or (st["severe"], st["hard"], st["weak"], st["energy_cliffs"]) != (base["severe"], base["hard"], base["weak"], base["energy_cliffs"]):
+        if st["genre_cost"] > base["genre_cost"] + 1e-9 or st["tempo_fallbacks"] > base["tempo_fallbacks"] or (st["severe"], st["hard"], st["weak"], st["energy_cliffs"]) != (base["severe"], base["hard"], base["weak"], base["energy_cliffs"]):
             return False
         if (st["adjacent_artist"], st["near_artist"]) != (base["adjacent_artist"], base["near_artist"]):
             return False
@@ -1371,7 +1376,7 @@ def polish_weak_transitions(order, s):
     hi = len(best) - 1 if s.lock_last else len(best)
 
     def eligible(st):
-        if st["tempo_fallbacks"] > base["tempo_fallbacks"] or st["severe"] > base["severe"] or st["hard"] > base["hard"]:
+        if st["genre_cost"] > base["genre_cost"] + 1e-9 or st["tempo_fallbacks"] > base["tempo_fallbacks"] or st["severe"] > base["severe"] or st["hard"] > base["hard"]:
             return False
         if st["adjacent_artist"] > base["adjacent_artist"] or st["near_artist"] > base["near_artist"]:
             return False
@@ -1544,6 +1549,68 @@ def program_genre_pockets(order, s):
     return best
 
 
+def opening_later_count(order):
+    end = max(1, math.ceil(len(order) * 0.18))
+    return sum(t.get("Set Role") == "After warm-up" for t in order[:end])
+
+
+def _opening_energy_penalty(order, s):
+    if s.energy_arc == "Off":
+        return 0.0
+    vals, _ = _energy_values(order)
+    sorted_vals = sorted(vals)
+    end = max(1, math.ceil(len(order) * 0.18))
+    return sum(max(0.0, _energy_percentile(v, sorted_vals) - 0.42)
+               * (end - i) / end for i, v in enumerate(vals[:end]))
+
+
+def program_opening(order, s):
+    """Respect explicit DJ placement choices with at most one cut/fade reset.
+
+    Move contiguous blocks so the genre runs themselves remain intact. The
+    original BPM and transition scores are never rewritten to disguise a reset.
+    """
+    best = list(order)
+    if not opening_later_count(best):
+        return best
+    floor = _route_program_stats(best, s)
+    limit = max(1, math.ceil(len(best) * 0.18))
+    start = 1 if s.lock_first else 0
+    end = len(best) - 1 if s.lock_last else len(best)
+    for _ in range(3):
+        best_count = opening_later_count(best)
+        if not best_count:
+            break
+        choice = None
+        choice_key = None
+        for stop in range(start + 1, end + 1):
+            block = best[start:stop]
+            if not any(t.get("Set Role") == "After warm-up" for t in block):
+                continue
+            remainder = best[:start] + best[stop:]
+            for dest in range(limit, len(remainder) + (0 if s.lock_last else 1)):
+                cand = remainder[:dest] + block + remainder[dest:]
+                count = opening_later_count(cand)
+                if count >= best_count:
+                    continue
+                st = _route_program_stats(cand, s)
+                # One planned reset maximum, including existing unsafe edges.
+                if st["hard"] > (1 if s.allow_opening_reset else floor["hard"]) or st["weak"] > floor["weak"] + (1 if s.allow_opening_reset else 0):
+                    continue
+                if st["genre_cost"] > floor["genre_cost"] + 1e-9:
+                    continue
+                if st["adjacent_artist"] > floor["adjacent_artist"] or st["near_artist"] > floor["near_artist"]:
+                    continue
+                key = (-count, -_opening_energy_penalty(cand, s), -st["hard"], -st["tempo_fallbacks"],
+                       -st["genre_cost"], -st["weak"], st["avg"], st["arc"])
+                if choice_key is None or key > choice_key:
+                    choice, choice_key = cand, key
+        if choice is None:
+            break
+        best = choice
+    return best
+
+
 def optimize(tracks, s: Settings):
     if not tracks:
         return [], []
@@ -1620,6 +1687,9 @@ def optimize(tracks, s: Settings):
 
     # Restore the dedicated final genre-pocket pass after other polishers.
     best = program_genre_pockets(best, s)
+    before_opening = best
+    best = program_opening(best, s)
+    opening_changed = any(a is not b for a, b in zip(before_opening, best))
 
     transitions = []
     for i in range(len(best) - 1):
@@ -1628,4 +1698,7 @@ def optimize(tracks, s: Settings):
     transitions = _mark_escape_reasons(best, transitions, s)
     for detail in transitions:
         detail["quality"] = transition_quality(detail, s)
+        if s.allow_opening_reset and opening_changed and detail.get("bpm_diff") is not None and detail["bpm_diff"] > s.bpm_guardrail:
+            detail["quality"] = "Deliberate reset"
+            detail["reason"] = "Deliberate reset — use a clean cut or fade; " + detail["reason"]
     return best, transitions
