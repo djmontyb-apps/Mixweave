@@ -13,10 +13,12 @@ from optimizer import (
     energy_zone_labels,
     artist_spacing_stats,
     vibe_program_details,
+    genre_pocket_stats,
+    track_genre_family,
 )
 
 
-st.set_page_config(page_title="Mixweave 1.4.1", page_icon="🎚️", layout="wide")
+st.set_page_config(page_title="Mixweave 1.4.2", page_icon="🎚️", layout="wide")
 
 st.markdown(
     """
@@ -155,7 +157,7 @@ def set_health(avg_score, weak, hard_bpm, max_bpm_diff, adjacent_artist, program
 
 
 with st.sidebar:
-    st.markdown("### 🎚️ Mixweave 1.4.1")
+    st.markdown("### 🎚️ Mixweave 1.4.2")
     st.caption("Whole-set DJ sequencing")
 
     mode = st.segmented_control("Preset", ["Smooth", "Balanced", "Harmonic"], default="Balanced")
@@ -224,6 +226,11 @@ with st.sidebar:
         "Artist spacing", options=["Off", "Light", "Normal", "Strong"], value="Normal"
     )
     artist_penalty = {"Off": 0.0, "Light": 0.04, "Normal": 0.08, "Strong": 0.14}[artist_rule]
+
+    genre_rule = st.segmented_control(
+        "Genre pockets", ["Off", "Light", "Normal", "Strong"], default="Normal",
+        help="Keep compatible tracks in sustained genre runs. The final pass preserves BPM safety, weak-link counts, artist spacing, and energy guardrails.")
+    genre_influence = {"Off": 0.0, "Light": 0.10, "Normal": 0.20, "Strong": 0.30}.get(genre_rule, 0.20)
 
     with st.expander("Fine-tune the set", expanded=False):
         energy_mode = st.selectbox("Adjacent energy", ["Smooth", "Build"], index=0)
@@ -404,6 +411,8 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
         energy_arc=energy_arc,
         energy_arc_influence=energy_arc_influence,
         artist_spacing=artist_penalty,
+        genre_pockets=genre_rule != "Off",
+        genre_pocket_influence=genre_influence,
         danceability_influence=danceability_influence,
         valence_influence=valence_influence,
         depth=depth,
@@ -414,7 +423,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     with st.spinner("Mixweave is planning the whole set…"):
         ordered, transitions = optimize(records, settings)
 
-    out = pd.DataFrame(ordered).copy()
+    out = pd.DataFrame(ordered).drop(columns=["Mixweave #"], errors="ignore").copy()
     out.insert(0, "Mixweave #", range(1, len(out) + 1))
     out["Transition Score"] = [None] + [t["score"] for t in transitions]
     out["Transition Reason"] = ["OPEN"] + [t["reason"] for t in transitions]
@@ -434,6 +443,18 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     adjacent_artist, near_artist = artist_spacing_stats(ordered)
     health, health_note = set_health(avg_score, weak, bad_bpm, max_bpm_diff, adjacent_artist, arc["score"])
 
+    genre_before, genre_after = genre_pocket_stats(records), genre_pocket_stats(ordered)
+    pocket_labels = []
+    pocket_number = 0
+    last_family = ""
+    for track in ordered:
+        family = track_genre_family(track)
+        if family and family != last_family:
+            pocket_number += 1
+        pocket_labels.append(pocket_number if family else None)
+        last_family = family
+    out["Genre Pocket"] = pocket_labels
+    st.caption(f"Genre pockets (2–4 tracks): {genre_before['pockets']} → {genre_after['pockets']} • Isolated genre tracks: {genre_before['islands']} → {genre_after['islands']}")
     st.success("Mixweave complete.")
     st.markdown(
         f'<div class="sf-health"><div class="sf-health-title">Set Health: {health}</div><div class="sf-muted">{health_note}</div></div>',
@@ -474,7 +495,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
 
     st.subheader("Optimized running order")
     show_cols = ["Mixweave #", "Title", "Artist", "BPM", "Camelot Key", "Energy"]
-    for col in ["Genre", "Genre Family", "Danceability", "Valence", "Acousticness", "Loudness LUFS"]:
+    for col in ["Genre", "Genre Family", "Genre Pocket", "Danceability", "Valence", "Acousticness", "Loudness LUFS"]:
         if col in out.columns:
             show_cols.append(col)
     show_cols += ["Program Zone", "Transition Score", "Transition Quality", "Transition Reason", "Effective BPM Δ"]
@@ -513,7 +534,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d1.download_button(
         "Download CSV",
         csv_bytes,
-        file_name="Mixweave_v1.4.1_optimized_playlist.csv",
+        file_name="Mixweave_v1.4.2_optimized_playlist.csv",
         mime="text/csv",
         width="stretch",
     )
@@ -524,7 +545,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d2.download_button(
         "Download Excel",
         xbuf.getvalue(),
-        file_name="Mixweave_v1.4.1_optimized_playlist.xlsx",
+        file_name="Mixweave_v1.4.2_optimized_playlist.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",
     )
