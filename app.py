@@ -19,7 +19,7 @@ from optimizer import (
 )
 
 
-st.set_page_config(page_title="Mixweave 1.4.4", page_icon="🎚️", layout="wide")
+st.set_page_config(page_title="Mixweave 1.4.5", page_icon="🎚️", layout="wide")
 
 st.markdown(
     """
@@ -158,7 +158,7 @@ def set_health(avg_score, weak, hard_bpm, max_bpm_diff, adjacent_artist, program
 
 
 with st.sidebar:
-    st.markdown("### 🎚️ Mixweave 1.4.4")
+    st.markdown("### 🎚️ Mixweave 1.4.5")
     st.caption("Whole-set DJ sequencing")
 
     mode = st.segmented_control("Preset", ["Smooth", "Balanced", "Harmonic"], default="Balanced")
@@ -391,6 +391,14 @@ with st.expander("Review or assign genre families", expanded=classified < len(df
     df["Genre Family"] = genre_editor["Genre Family"].fillna("")
     st.caption("Use your DJ judgment for crossover tracks. These Genre Family choices are passed into the Mixweave optimizer.")
 
+with st.expander("Two-song artist runs", expanded=False):
+    artist_counts = df["Artist"].fillna("").str.strip().value_counts()
+    artist_run_bridges = st.checkbox("Allow stems or cuts within artist runs", value=False,
+                                      help="For selected artists only. Suggest a vocal stem bridge or clean cut even when full-track BPM/key matching is awkward. MixWeave does not render stems or audio. Other set transitions retain the mixing limits.")
+    run_artists = st.multiselect("Artists to pair for a quick mix",
+                                sorted(a for a, n in artist_counts.items() if a and n == 2),
+                                help="Optional. Try a two-song run for selected artists when genre, native BPM, key, and placement checks permit it. A pair is not guaranteed.")
+
 with st.expander("Plan the opening", expanded=False):
     st.caption("Choose your opener and songs to save until after the warm-up (the first 18% of the set). These are required placements. If they cannot be met within your mixing limits, Mixweave will ask you to revise the choices instead of exporting an incorrect order.")
     track_options = list(range(len(df)))
@@ -405,8 +413,8 @@ with st.expander("Plan the opening", expanded=False):
     deferred = st.multiselect("Save until after warm-up", track_options,
                              format_func=track_label,
                              default=[i for i, value in enumerate(df.get("Set Role", [])) if value == "After warm-up"])
-    opening_reset = st.checkbox("Allow one deliberate reset for the opening", value=False,
-                               help="A clean cut or fade may be needed. Any reset is labeled in the result; BPM and transition scores stay unchanged.")
+    opening_reset = st.checkbox("Allow one deliberate reset for placements or artist runs", value=False,
+                               help="An opening placement or selected artist pair may need a clean cut or fade. At most one reset is allowed. Any reset is labeled in the result; BPM and transition scores stay unchanged.")
     if opener in deferred:
         st.warning("The opener cannot also be saved for later. Its opener choice takes priority.")
     df["Set Role"] = ["Opener" if i == opener else ("After warm-up" if i in deferred else "Automatic") for i in track_options]
@@ -432,6 +440,8 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
         energy_arc=energy_arc,
         energy_arc_influence=energy_arc_influence,
         artist_spacing=artist_penalty,
+        artist_runs=tuple(run_artists),
+        artist_run_bridges=artist_run_bridges,
         genre_pockets=genre_rule != "Off",
         genre_pocket_influence=genre_influence,
         danceability_influence=danceability_influence,
@@ -466,7 +476,17 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     max_bpm_diff = max(bpm_diffs) if bpm_diffs else 0.0
     arc = energy_arc_details(ordered, settings)
     vibe = vibe_program_details(ordered, settings)
-    adjacent_artist, near_artist = artist_spacing_stats(ordered)
+    if run_artists:
+        paired_artists = {str(a.get("Artist", "")).strip()
+                          for a, b in zip(ordered, ordered[1:])
+                          if str(a.get("Artist", "")).strip() == str(b.get("Artist", "")).strip()
+                          and str(a.get("Artist", "")).strip() in run_artists}
+        if paired_artists:
+            st.caption("Two-song artist runs: " + ", ".join(sorted(paired_artists)))
+        unpaired_artists = set(run_artists) - paired_artists
+        if unpaired_artists:
+            st.info("No acceptable two-song placement found for: " + ", ".join(sorted(unpaired_artists)) + ". These songs retain normal spacing.")
+    adjacent_artist, near_artist = artist_spacing_stats(ordered, settings)
     health, health_note = set_health(avg_score, weak, bad_bpm, max_bpm_diff, adjacent_artist, arc["score"])
 
     genre_before, genre_after = genre_pocket_stats(records), genre_pocket_stats(ordered)
@@ -565,7 +585,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d1.download_button(
         "Download CSV",
         csv_bytes,
-        file_name="Mixweave_v1.4.4_optimized_playlist.csv",
+        file_name="Mixweave_v1.4.5_optimized_playlist.csv",
         mime="text/csv",
         width="stretch",
     )
@@ -576,7 +596,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d2.download_button(
         "Download Excel",
         xbuf.getvalue(),
-        file_name="Mixweave_v1.4.4_optimized_playlist.xlsx",
+        file_name="Mixweave_v1.4.5_optimized_playlist.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",
     )
