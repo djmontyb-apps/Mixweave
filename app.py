@@ -5,6 +5,7 @@ import pandas as pd
 import pdfplumber
 import streamlit as st
 from audio_analysis import attach_features
+from library_versions import LibraryVersions, version_label, attach_selected_versions
 from detailed_genres import prepare_genres, attach_library_genres, style_parts, pocket_key
 from genre_metadata import GENRE_FAMILIES, RekordboxGenres, genre_family
 from optimizer import (
@@ -310,14 +311,36 @@ with st.expander("Add private master-library analysis", expanded=False):
     if analysis_file:
         try:
             analysis = normalize_columns(pd.read_csv(analysis_file))
-            df = attach_library_genres(attach_features(df, analysis), analysis)
+            versions = LibraryVersions(analysis)
+            upload_id = hashlib.sha256(uploaded.getvalue() + analysis_file.getvalue()).hexdigest()[:16]
+            st.caption("Choose a library version for any song below. Suggestions do not change your playlist until you select one. Choices are kept during this session and included in your exported playlist for reuse.")
+            for position, (idx, track) in enumerate(df.iterrows()):
+                options = versions.options(track)
+                if not options:
+                    continue
+                paths = [clean_row["File"] for clean_row in options]
+                labels = {row["File"]: version_label(row) for row in options}
+                saved = str(track.get("Library Selected File", ""))
+                default = paths.index(saved) + 1 if saved in paths else 0
+                selected = st.selectbox(
+                    f"{position + 1}. {track['Title']} — {track['Artist']}",
+                    [""] + paths, index=default,
+                    format_func=lambda path, labels=labels: labels.get(path, "Keep current match / choose a version"),
+                    key=f"library_version_{upload_id}_{position}",
+                )
+                if selected:
+                    df.at[idx, "Library Selected File"] = selected
+                elif "Library Selected File" in df:
+                    df.at[idx, "Library Selected File"] = ""
+            df = attach_selected_versions(df, analysis)
+            st.download_button("Download playlist with version choices", df.to_csv(index=False).encode("utf-8-sig"), "Mixweave_playlist_version_choices.csv", "text/csv")
         except ValueError as e:
             st.error(str(e))
             st.stop()
         matched = df["Essentia Match"].isin(["Exact file", "Artist/title — recording unverified", "Garth Brooks version — performer differs"]).sum()
         st.caption(f"{matched}/{len(df)} tracks received Essentia scores. Styles from your library are attached where a unique recording match exists.")
         st.dataframe(df[["Title", "Artist", "Essentia Match", "Essentia File"]] if "Essentia File" in df else df[["Title", "Artist", "Essentia Match"]], hide_index=True, width="stretch")
-        st.caption("Artist/title matches do not confirm the same recording. When several edits exist, add the exact scanner File path to your playlist.")
+        st.caption("Artist/title matches do not confirm the same recording. Use the version dropdowns above when several edits exist or the titles differ.")
 
 missing = [c for c in required if c not in df.columns]
 if missing:
