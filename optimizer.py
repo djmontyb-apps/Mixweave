@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from genre_metadata import genre_family, GENRE_FAMILIES
+from detailed_genres import pocket_key, style_key
 
 CAMELOT_RE = re.compile(r"^\s*(1[0-2]|[1-9])([AB])\s*$", re.I)
 
@@ -51,6 +52,7 @@ class Settings:
     energy_cliff_threshold: float = 20.0
     energy_cliff_penalty: float = 0.22
     genre_run_influence: float = 0.035
+    detailed_genres: bool = True
     genre_pockets: bool = True
     genre_pocket_influence: float = 0.20
     allow_opening_reset: bool = False
@@ -230,7 +232,7 @@ def _settings_score_signature(s):
         getattr(s, "half_double_penalty", 0.10),
         getattr(s, "energy_cliff_threshold", 20.0),
         getattr(s, "energy_cliff_penalty", 0.22),
-        getattr(s, "genre_run_influence", 0.035),
+        getattr(s, "genre_run_influence", 0.035), s.detailed_genres,
     )
 
 def transition_score(a, b, s: Settings, force_escape=False):
@@ -283,11 +285,14 @@ def _transition_score_uncached(a, b, s: Settings, force_escape=False):
 
     # Genre Family is a small live-programming preference, never a safety rule.
     # It rewards useful 2-4 song neighborhoods without forcing giant genre blocks.
-    ga = str(a.get("Genre Family", "")).strip().lower()
-    gb = str(b.get("Genre Family", "")).strip().lower()
+    ga, gb = track_genre_family(a), track_genre_family(b)
     same_genre = bool(ga and gb and ga == gb)
-    if same_genre:
+    ka, kb = pocket_key(a, s.detailed_genres), pocket_key(b, s.detailed_genres)
+    same_style = bool(s.detailed_genres and style_key(a) and style_key(a) == style_key(b))
+    if ka and ka == kb:
         score += max(0.0, min(0.08, getattr(s, "genre_run_influence", 0.035)))
+    elif same_genre:
+        score += 0.25 * max(0.0, min(0.08, getattr(s, "genre_run_influence", 0.035)))
 
     artist_a = str(a.get("Artist", "")).strip().lower()
     artist_b = str(b.get("Artist", "")).strip().lower()
@@ -336,6 +341,7 @@ def _transition_score_uncached(a, b, s: Settings, force_escape=False):
         "energy_drop": round(energy_drop, 1),
         "energy_cliff": bool(energy_drop > cliff_at),
         "same_genre_family": same_genre,
+        "same_genre_style": same_style,
         "escape": bool(force_escape),
     }
 
@@ -600,13 +606,13 @@ def vibe_program_details(order, s):
     }
 
 
-def genre_run_stats(order):
+def genre_run_stats(order, detailed=True):
     """Return singleton genre count and same-genre adjacent links.
 
     A singleton is a one-song genre detour between two different families. This
     targets genre pinball without rewarding one enormous genre block.
     """
-    genres = [str(t.get("Genre Family", "")).strip().lower() for t in order]
+    genres = [pocket_key(t, detailed) for t in order]
     singleton = 0
     same_links = 0
     for i in range(len(genres) - 1):
@@ -663,8 +669,8 @@ def objective(order, s):
     # collisions -> near artist repeats -> transition pain -> programming zones.
     # This makes artist separation a real DJ rule while never outranking BPM safety.
     adjacent_artist, near_artist = artist_spacing_stats(order, s)
-    genre_singletons, genre_same_links = genre_run_stats(order)
-    pocket_cost = genre_pocket_stats(order)["cost"] if s.genre_pockets else 0.0
+    genre_singletons, genre_same_links = genre_run_stats(order, s.detailed_genres)
+    pocket_cost = genre_pocket_stats(order, s.detailed_genres)["cost"] if s.genre_pockets else 0.0
     arc = energy_zone_score(order, s)
     arc_weight = max(0.0, min(1.0, getattr(s, "energy_arc_influence", 0.25)))
     # Keep the arc term bounded so it refines rather than overwhelms mixing quality.
@@ -1109,10 +1115,10 @@ def _route_program_stats(order, s):
             weak += 1
         if d.get("energy_cliff"):
             energy_cliffs += 1
-    genre_singletons, genre_same_links = genre_run_stats(order)
+    genre_singletons, genre_same_links = genre_run_stats(order, s.detailed_genres)
     return {
         "severe": severe, "hard": hard, "weak": weak, "energy_cliffs": energy_cliffs,
-        "genre_cost": genre_pocket_stats(order)["cost"] if s.genre_pockets else 0.0,
+        "genre_cost": genre_pocket_stats(order, s.detailed_genres)["cost"] if s.genre_pockets else 0.0,
         "tempo_fallbacks": tempo_fallbacks,
         "genre_singletons": genre_singletons, "genre_same_links": genre_same_links,
         "avg": sum(scores)/max(len(scores),1),
@@ -1473,8 +1479,7 @@ def track_genre_family(track):
     # An explicit blank override means leave this track unclassified.
     return _cached_genre_family(str(value or "") if "Genre Family" in track else str(track.get("Genre", "") or ""))
 
-def genre_pocket_stats(order):
-    families = [track_genre_family(t) for t in order]
+def _pocket_stats(families):
     totals = {f: families.count(f) for f in set(families) if f}
     runs = []
     i = 0
@@ -1499,8 +1504,20 @@ def genre_pocket_stats(order):
         elif length >= 4:
             cost += 0.08 + 0.25 * (length - 4)
     return {"cost": cost if active else 0.0, "islands": islands,
-            "classified": sum(totals.values()), "families": len(totals),
+            "classified": sum(totals.values()), "families": len(totals), "groups": len(totals),
             "pockets": sum(2 <= n <= 4 for _, n in runs)}
+
+
+def genre_pocket_stats(order, detailed=True):
+    broad = _pocket_stats([track_genre_family(t) for t in order])
+    if not detailed or not any(style_key(t) for t in order):
+        return broad
+    result = _pocket_stats([pocket_key(t) for t in order])
+    result['cost'] += 0.35 * broad['cost']
+    result['families'] = broad['families']
+    result['detailed_styles'] = len({style_key(t) for t in order if style_key(t)})
+    return result
+
 
 def program_genre_pockets(order, s):
     """Bounded final pass with cumulative safety/quality budgets.
@@ -1510,8 +1527,8 @@ def program_genre_pockets(order, s):
     """
     best = list(order)
     influence = max(0.0, min(0.3, s.genre_pocket_influence))
-    info = genre_pocket_stats(best)
-    if not s.genre_pockets or influence == 0 or info["families"] < 2:
+    info = genre_pocket_stats(best, s.detailed_genres)
+    if not s.genre_pockets or influence == 0 or info["groups"] < 2:
         return best
     floor = _route_program_stats(best, s)
     floor_diffs = sorted((transition_score(a, b, s)[1]["bpm_diff"] or 0)
@@ -1524,18 +1541,18 @@ def program_genre_pockets(order, s):
         options = []
         # Rank cheaply before evaluating only the best 240 proposals in detail.
         for i in range(lo, hi):
-            family = track_genre_family(best[i])
+            family = pocket_key(best[i], s.detailed_genres)
             if not family:
                 continue
             for j in range(lo, hi):
-                if i == j or track_genre_family(best[j]) != family:
+                if i == j or pocket_key(best[j], s.detailed_genres) != family:
                     continue
                 for target in (j, j + 1):
                     cand = list(best)
                     item = cand.pop(i)
                     dest = target - int(target > i)
                     cand.insert(dest, item)
-                    cost = genre_pocket_stats(cand)["cost"]
+                    cost = genre_pocket_stats(cand, s.detailed_genres)["cost"]
                     if cost < info["cost"] - 1e-8:
                         options.append((cost, i, target, cand))
         options.sort(key=lambda x: x[:3])
@@ -1562,7 +1579,7 @@ def program_genre_pockets(order, s):
         if choice is None:
             break
         best = choice[1]
-        info = genre_pocket_stats(best)
+        info = genre_pocket_stats(best, s.detailed_genres)
     return best
 
 

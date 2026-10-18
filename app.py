@@ -5,6 +5,7 @@ import pandas as pd
 import pdfplumber
 import streamlit as st
 from audio_analysis import attach_features
+from detailed_genres import prepare_genres, attach_library_genres, style_parts, pocket_key
 from genre_metadata import GENRE_FAMILIES, RekordboxGenres, genre_family
 from optimizer import (
     Settings,
@@ -19,7 +20,7 @@ from optimizer import (
 )
 
 
-st.set_page_config(page_title="Mixweave 1.4.5", page_icon="🎚️", layout="wide")
+st.set_page_config(page_title="Mixweave 1.4.6", page_icon="🎚️", layout="wide")
 
 st.markdown(
     """
@@ -124,6 +125,12 @@ def normalize_columns(df):
         "pop.": "Popularity",
         "pop": "Popularity",
         "popularity": "Popularity",
+        "file": "File",
+        "genre style": "Genre Style",
+        "subgenre": "Genre Style",
+        "essentia top style": "Essentia Top Style",
+        "essentia genre model score": "Essentia Genre Model Score",
+        "original rekordbox genres": "Original Rekordbox Genres",
         "genre family": "Genre Family",
         "genre": "Genre",
         "genres": "Genre",
@@ -158,7 +165,7 @@ def set_health(avg_score, weak, hard_bpm, max_bpm_diff, adjacent_artist, program
 
 
 with st.sidebar:
-    st.markdown("### 🎚️ Mixweave 1.4.5")
+    st.markdown("### 🎚️ Mixweave 1.4.6")
     st.caption("Whole-set DJ sequencing")
 
     mode = st.segmented_control("Preset", ["Smooth", "Balanced", "Harmonic"], default="Balanced")
@@ -230,7 +237,7 @@ with st.sidebar:
 
     genre_rule = st.segmented_control(
         "Genre pockets", ["Off", "Light", "Normal", "Strong"], default="Normal",
-        help="Keep compatible tracks in sustained genre runs. The final pass preserves BPM safety, weak-link counts, artist spacing, and energy guardrails.")
+        help="Keep compatible detailed styles in sustained runs; broad families are a secondary guide. The final pass preserves BPM safety, weak-link counts, artist spacing, and energy guardrails.")
     genre_influence = {"Off": 0.0, "Light": 0.10, "Normal": 0.20, "Strong": 0.30}.get(genre_rule, 0.20)
 
     with st.expander("Fine-tune the set", expanded=False):
@@ -297,17 +304,18 @@ except Exception as e:
     st.error(f"Could not read that file: {e}")
     st.stop()
 
-with st.expander("Add Essentia analysis", expanded=False):
-    st.caption("Upload the scanner results CSV to add scores to this playlist. Existing BPM, key, and energy stay as supplied.")
+with st.expander("Add private master-library analysis", expanded=False):
+    st.caption("Upload your analyzed master-library CSV once for this playlist. Detailed styles, genre families and audio values are matched to your recordings. Existing genres, BPM, key, and energy stay as supplied.")
     analysis_file = st.file_uploader("Scanner results", type=["csv"], key="essentia_analysis")
     if analysis_file:
         try:
-            df = attach_features(df, normalize_columns(pd.read_csv(analysis_file)))
+            analysis = normalize_columns(pd.read_csv(analysis_file))
+            df = attach_library_genres(attach_features(df, analysis), analysis)
         except ValueError as e:
             st.error(str(e))
             st.stop()
         matched = df["Essentia Match"].isin(["Exact file", "Artist/title — recording unverified", "Garth Brooks version — performer differs"]).sum()
-        st.caption(f"{matched}/{len(df)} tracks received Essentia scores. Review the matches below.")
+        st.caption(f"{matched}/{len(df)} tracks received Essentia scores. Styles from your library are attached where a unique recording match exists.")
         st.dataframe(df[["Title", "Artist", "Essentia Match", "Essentia File"]] if "Essentia File" in df else df[["Title", "Artist", "Essentia Match"]], hide_index=True, width="stretch")
         st.caption("Artist/title matches do not confirm the same recording. When several edits exist, add the exact scanner File path to your playlist.")
 
@@ -364,32 +372,34 @@ with st.expander("Import Rekordbox genres", expanded=False):
         except ValueError as error:
             st.error(str(error))
 
-st.subheader("Genre Families")
-if "Genre Family" not in df.columns:
-    df["Genre Family"] = ""
-
-df["Genre Family"] = df["Genre Family"].fillna("").astype(str)
-if "Genre" in df:
-    missing_family = df["Genre Family"].str.strip().eq("")
-    df.loc[missing_family, "Genre Family"] = df.loc[missing_family, "Genre"].fillna("").map(genre_family)
-classified = int(df["Genre Family"].str.strip().ne("").sum())
-st.caption(f"{classified}/{len(df)} tracks have a genre family. Recognized genres are filled automatically; review any blanks below.")
-
-with st.expander("Review or assign genre families", expanded=classified < len(df)):
-    genre_editor = st.data_editor(
-        df[["Title", "Artist", "Genre Family"]],
-        hide_index=True,
-        disabled=["Title", "Artist"],
-        width="stretch",
-        column_config={
-            "Genre Family": st.column_config.SelectboxColumn(
-                "Genre Family", options=[""] + GENRE_FAMILIES + sorted(set(df["Genre Family"]) - set(GENRE_FAMILIES) - {""})
-            )
-        },
-        key="genre_editor_" + hashlib.sha256(uploaded.getvalue()).hexdigest(),
-    )
+df = prepare_genres(df)
+st.subheader("Detailed genres")
+style_count = int(df["Genre Style"].str.strip().ne("").sum())
+st.caption(f"{style_count}/{len(df)} tracks have detailed styles. MixWeave uses styles such as Electro House, Dubstep and Salsa for pockets. Broad families guide tracks without a detailed style.")
+with st.expander("View or adjust detailed genres", expanded=False):
+    style_view = df[["Title", "Artist", "Genre Style", "Genre Style Source"]].copy()
+    style_view["Model score / 100"] = (pd.to_numeric(df.get("Essentia Genre Model Score", pd.Series(index=df.index, dtype=float)), errors="coerce") * 100).round()
+    style_editor = st.data_editor(style_view, hide_index=True, width="stretch",
+        disabled=["Title", "Artist", "Genre Style Source", "Model score / 100"],
+        column_config={"Genre Style": st.column_config.TextColumn("Detailed genre"),
+                       "Model score / 100": st.column_config.NumberColumn(format="%.0f")},
+        key="style_editor_" + hashlib.sha256(uploaded.getvalue()).hexdigest())
+    edited_styles = style_editor["Genre Style"].fillna("").astype(str).str.strip()
+    changed_styles = edited_styles.ne(df["Genre Style"])
+    df["Genre Style"] = edited_styles
+    df.loc[changed_styles, "Genre Style Source"] = "User style choice"
+    for idx in df.index[changed_styles]:
+        related_family = style_parts(df.at[idx, "Genre Style"])[2]
+        if related_family:
+            df.at[idx, "Genre Family"] = related_family
+    st.caption("Model scores describe Essentia's saved prediction, not the correctness of a manual edit. Your original genre labels and raw model scores remain in the export.")
+with st.expander("Broad family fallback (optional)", expanded=False):
+    genre_editor = st.data_editor(df[["Title", "Artist", "Genre Family"]], hide_index=True,
+        disabled=["Title", "Artist"], width="stretch",
+        column_config={"Genre Family": st.column_config.SelectboxColumn("Broad family", options=[""] + GENRE_FAMILIES + sorted(set(df["Genre Family"]) - set(GENRE_FAMILIES) - {""}))},
+        key="genre_editor_" + hashlib.sha256(uploaded.getvalue()).hexdigest())
     df["Genre Family"] = genre_editor["Genre Family"].fillna("")
-    st.caption("Use your DJ judgment for crossover tracks. These Genre Family choices are passed into the Mixweave optimizer.")
+    st.caption("Families help connect related styles; they do not combine every EDM track into one pocket.")
 
 with st.expander("Two-song artist runs", expanded=False):
     artist_counts = df["Artist"].fillna("").str.strip().value_counts()
@@ -494,7 +504,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     pocket_number = 0
     last_family = ""
     for track in ordered:
-        family = track_genre_family(track)
+        family = pocket_key(track)
         if family and family != last_family:
             pocket_number += 1
         pocket_labels.append(pocket_number if family else None)
@@ -546,7 +556,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
 
     st.subheader("Optimized running order")
     show_cols = ["Mixweave #", "Title", "Artist", "BPM", "Camelot Key", "Energy"]
-    for col in ["Set Role", "Genre", "Genre Family", "Genre Pocket", "Danceability", "Valence", "Acousticness", "Loudness LUFS"]:
+    for col in ["Set Role", "Genre Style", "Genre", "Genre Family", "Genre Pocket", "Danceability", "Valence", "Acousticness", "Loudness LUFS"]:
         if col in out.columns:
             show_cols.append(col)
     show_cols += ["Program Zone", "Transition Score", "Transition Quality", "Transition Reason", "Effective BPM Δ"]
@@ -574,6 +584,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
                     "Energy score": t["energy_score"],
                     "Energy drop": t.get("energy_drop"),
                     "Energy cliff": t.get("energy_cliff"),
+                    "Same detailed style": t.get("same_genre_style"),
                     "Same genre family": t.get("same_genre_family"),
                     "Same artist": t["same_artist"],
                 }
@@ -585,7 +596,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d1.download_button(
         "Download CSV",
         csv_bytes,
-        file_name="Mixweave_v1.4.5_optimized_playlist.csv",
+        file_name="Mixweave_v1.4.6_optimized_playlist.csv",
         mime="text/csv",
         width="stretch",
     )
@@ -596,7 +607,7 @@ if st.button("⚡ Build my Mixweave set", type="primary", width="stretch"):
     d2.download_button(
         "Download Excel",
         xbuf.getvalue(),
-        file_name="Mixweave_v1.4.5_optimized_playlist.xlsx",
+        file_name="Mixweave_v1.4.6_optimized_playlist.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",
     )
