@@ -62,6 +62,8 @@ def attach_selected_versions(playlist, library):
     working = playlist.copy()
     working['Library Genre File']=''
     working['Library Genre Match']=''
+    for field in working.columns:
+        if field.startswith('Essentia '):working[field]=working[field].astype(object)
     original_file = playlist['File'].copy() if 'File' in playlist else None
     if 'Library Selected File' in playlist:
         if 'File' not in working:working['File']=''

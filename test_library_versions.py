@@ -32,4 +32,13 @@ class VersionTests(unittest.TestCase):
   out=attach_selected_versions(self.playlist,self.library).iloc[0]
   self.assertEqual(out['Essentia Top Style'],'Electronic---Dubstep')
   self.assertEqual(out['Genre Style'],'Dubstep')
+ def test_blank_then_text_model_column_from_csv(self):
+  self.library['Danceability Model']=[float('nan'),'Discogs519 MAEST']
+  self.playlist['Library Selected File']='/Bass.mp3'
+  self.playlist['Danceability Model']=float('nan')
+  self.playlist['Essentia Genre Model']=float('nan')
+  self.library['Essentia Genre Model']=[float('nan'),'Discogs519 MAEST']
+  out=attach_selected_versions(self.playlist,self.library).iloc[0]
+  self.assertEqual(out['Danceability Model'],'Discogs519 MAEST')
+  self.assertEqual(out['Essentia Genre Model'],'Discogs519 MAEST')
 if __name__=='__main__':unittest.main()

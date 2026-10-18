@@ -59,6 +59,17 @@ def attach_features(playlist, analysis):
             out[field] = float('nan')
     for field in FEATURES:
         out[field] = pd.to_numeric(out[field], errors='coerce').astype(float)
+    # CSV columns containing only blanks arrive as floats. Metadata may be text
+    # on later rows, so allocate its storage before assigning scanner values.
+    metadata = {'Genre', 'Genre Source', 'Essentia File', 'Essentia Match'}
+    metadata.update(field for field in usable.columns
+                    if field.startswith(('Danceability Raw', 'Valence Raw', 'Acousticness Raw'))
+                    or field.endswith('Model'))
+    for field in metadata:
+        if field in out:
+            out[field] = out[field].astype(object)
+        else:
+            out[field] = pd.Series('', index=out.index, dtype=object)
     out['Essentia Match'] = ''
     for idx, row in out.iterrows():
         path = text(row.get('File', ''))
