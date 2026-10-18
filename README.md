@@ -1,8 +1,10 @@
-# MixWeave 1.4.5
+# MixWeave 1.4.6
+
+Detailed genres now guide playlist pockets. Styles such as Electro House, Dubstep, Deep House and Salsa remain distinct; broad genre families serve as a fallback and secondary guide. Upload an analyzed master-library CSV under **Add private master-library analysis**, or include **Genre Style** / **Essentia Top Style** columns in your playlist. Existing recording metadata stays intact.
 
 Half/double-time matches are a last resort: routing prefers fewer 2:1 tempo bridges after protecting BPM guardrails and weak transitions. Greedy selection uses a normal-tempo link whenever it meets the transition target. Genre, energy, and vibe polish cannot add extra 2:1 bridges. Original track BPM values stay unchanged.
 
-**MixWeave** is a DJ playlist sequencing tool that turns a crate or playlist into a more performance-ready running order using BPM, Camelot key, Energy, artist spacing, genre-family information, and optional vibe metadata.
+**MixWeave** is a DJ playlist sequencing tool that turns a crate or playlist into a more performance-ready running order using BPM, Camelot key, Energy, artist spacing, detailed genre styles, broad genre families, and optional vibe metadata.
 
 > **Make it mixable first. Make it harmonic second. Make the whole set flow.**
 
@@ -181,3 +183,13 @@ An explicitly selected opener stays first. Songs marked “After warm-up” stay
 Select artists in “Two-song artist runs” to try a short, same-family pair. Only artists appearing exactly twice are offered. MixWeave preserves the opener, last-track lock, and after-warm-up choices, and checks the surrounding transitions before accepting a pair. Standard artist runs reject moves that worsen genre pockets or add half/double-time bridges. Unselected artists retain normal spacing, and three-song runs are not exempt. A pair is optional and may remain separated if no acceptable placement is found. With the one-reset option enabled, a selected pair can use the shared single clean-cut/fade allowance for a native BPM difference up to four BPM beyond the guardrail. Original scores and BPM values remain visible.
 
 Enable “Allow stems or cuts within artist runs” to plan a selected pair without requiring full-track BPM/key compatibility. This explicitly permits a vocal stem bridge or clean cut within the pair; outside transitions retain tempo checks. Genre and weak-link scores become preferences for this mode. Each such edge is labeled “Artist bridge”, retaining its original score and BPM difference. MixWeave recommends a technique and does not render stems or audio.
+
+## Detailed genre sources and matching
+
+A supplied `Genre Style` is authoritative (an explicit blank uses the broad-family fallback). A recognized detailed saved genre is preferred to an Essentia suggestion. Mixed or broad labels remain preserved in `Genre` / `Original Rekordbox Genres`; the imported `Essentia Top Style` supplies finer detail where appropriate. Manual family decisions that conflict with a model style do not silently adopt that model style.
+
+Private master-library uploads match exact recording paths first. A supplied path that fails does not fall back to another recording. Full artist/title matching is allowed only for one unique library entry and is marked **recording unverified**; ambiguous editions need an exact path. The importer does not guess genres from BPM or rewrite BPM, Camelot keys (including slash-separated key changes), or Energy.
+
+`Genre Style` and source, original labels, model style and raw model score survive CSV/XLSX exports. The editor displays model scores on a rounded 0–100 scale; those values are not calibrated correctness probabilities. Private library contents stay out of GitHub. Detailed styles are sequencing preferences; tempo safety, opening/after-warm-up placements, energy guardrails and explicitly requested artist runs remain protected.
+
+Library version picker: after uploading the private master library, choose a recording for each playlist song from the suggested versions. Options show full title, artist, BPM, detailed style and file path. Edition-name normalization only suggests candidates; it never assigns a remix automatically. Download the playlist with version choices and upload that file next time to reuse selections. Existing playlist BPM, key, energy and manual style choices remain authoritative.
